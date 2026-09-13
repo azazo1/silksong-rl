@@ -1,0 +1,277 @@
+{
+  "BossScenes": [
+    {
+      "SceneName": "Clover_10",
+      "PosX": 96.3,
+      "PosY": 37.56,
+      "PosZ": 0.0,
+      "BossName": "三叶草舞者"
+    },
+    {
+      "SceneName": "Coral_29",
+      "PosX": 175.13,
+      "PosY": 26.4,
+      "PosZ": 0.0,
+      "BossName": "伏特维姆"
+    },
+    {
+      "SceneName": "Shadow_18",
+      "PosX": 54.35,
+      "PosY": 11.44,
+      "PosZ": 0.0,
+      "BossName": "伟大的格洛"
+    },
+    {
+      "SceneName": "Slab_10b",
+      "PosX": 37.56,
+      "PosY": 13.25,
+      "PosZ": 0.0,
+      "BossName": "原罪者"
+    },
+    {
+      "SceneName": "Bellway_Centipede_Arena",
+      "PosX": 140.0,
+      "PosY": 7.57,
+      "PosZ": 0.0,
+      "BossName": "噬钟者"
+    },
+    {
+      "SceneName": "Shellwood_22",
+      "PosX": 113.56,
+      "PosY": 6.57,
+      "PosZ": 0.0,
+      "BossName": "圣所守卫者赛斯"
+    },
+    {
+      "SceneName": "Memory_Coral_Tower",
+      "PosX": 56.3,
+      "PosY": 256.57,
+      "PosZ": 0.0,
+      "BossName": "壳王卡汗"
+    },
+    {
+      "SceneName": "Coral_33",
+      "PosX": 32.1,
+      "PosY": 61.57,
+      "PosZ": 0.0,
+      "BossName": "失心加蒙德"
+    },
+    {
+      "SceneName": "Abyss_Cocoon",
+      "PosX": 38.53,
+      "PosY": 6.37,
+      "PosZ": 0.0,
+      "BossName": "失心蕾丝"
+    },
+    {
+      "SceneName": "Shellwood_11b_Memory",
+      "PosX": 19.57,
+      "PosY": 115.1,
+      "PosZ": 0.0,
+      "BossName": "尼莱斯"
+    },
+    {
+      "SceneName": "Coral_11",
+      "PosX": 60.38,
+      "PosY": 14.57,
+      "PosZ": 0.0,
+      "BossName": "巨型螺蝇"
+    },
+    {
+      "SceneName": "Organ_01",
+      "PosX": 84.7,
+      "PosY": 113.67,
+      "PosZ": 0.0,
+      "BossName": "幽影"
+    },
+    {
+      "SceneName": "Ward_02",
+      "PosX": 49.01,
+      "PosY": 6.57,
+      "PosZ": 0.0,
+      "BossName": "散茧魂渊"
+    },
+    {
+      "SceneName": "Coral_Judge_Arena",
+      "PosX": 49.77,
+      "PosY": 24.57,
+      "PosZ": 0.0,
+      "BossName": "末代裁决者"
+    },
+    {
+      "SceneName": "Cog_Dancers",
+      "PosX": 39.75,
+      "PosY": 4.6,
+      "PosZ": 0.0,
+      "BossName": "机枢舞者"
+    },
+    {
+      "SceneName": "Memory_Ant_Queen",
+      "PosX": 148.24,
+      "PosY": 19.57,
+      "PosZ": 0.0,
+      "BossName": "梅卡尔歌后卡梅丽塔"
+    },
+    {
+      "SceneName": "Hang_17b",
+      "PosX": 39.33,
+      "PosY": 11.00,
+      "PosZ": 0.0,
+      "BossName": "次席戍卫"
+    },
+    {
+      "SceneName": "Ant_19",
+      "PosX": 53.88,
+      "PosY": 34.57,
+      "PosZ": 0.0,
+      "BossName": "残暴的兽蝇"
+    },
+    {
+      "SceneName": "Belltown_08",
+      "PosX": 56.7,
+      "PosY": 20.55,
+      "PosZ": 0.0,
+      "BossName": "炽焰之父"
+    },
+    {
+      "SceneName": "Library_13",
+      "PosX": 77.73,
+      "PosY": 14.57,
+      "PosZ": 0.0,
+      "BossName": "特罗比奥"
+    },
+    {
+      "SceneName": "Coral_27",
+      "PosX": 23.54,
+      "PosY": 33.57,
+      "PosZ": 0.0,
+      "BossName": "狂暴螺蝇"
+    },
+    {
+      "SceneName": "Crawl_10",
+      "PosX": 33.00,
+      "PosY": 7.57,
+      "PosZ": 0.0,
+      "BossName": "生质异化的赞戈"
+    },
+    {
+      "SceneName": "Dock_09",
+      "PosX": 36.5059,
+      "PosY": 7.5677,
+      "PosZ": 0.0,
+      "BossName": "西格尼斯"
+    },
+    {
+      "SceneName": "Shellwood_18",
+      "PosX": 44.4,
+      "PosY": 8.57,
+      "PosZ": 0.0,
+      "BossName": "碎裂者修女"
+    },
+    {
+      "SceneName": "Bone_East_08",
+      "PosX": 81.68,
+      "PosY": 22.06,
+      "PosZ": 0.0,
+      "BossName": "第四圣咏团"
+    },
+    {
+      "SceneName": "Room_CrowCourt_02",
+      "PosX": 32.92,
+      "PosY": 21.57,
+      "PosZ": 0.0,
+      "BossName": "腐囊之父"
+    },
+    {
+      "SceneName": "Cradle_03",
+      "PosX": 40.33,
+      "PosY": 139.72,
+      "PosZ": 0.0,
+      "BossName": "苍白之母"
+    },
+    {
+      "SceneName": "Clover_19",
+      "PosX": 38.470,
+      "PosY": 12.56,
+      "PosZ": 0.0,
+      "BossName": "苍白苜鹿"
+    },
+    {
+      "SceneName": "Tut_03",
+      "PosX": 87.07,
+      "PosY": 17.57,
+      "PosZ": 0.0,
+      "BossName": "苔藓之母"
+    },
+    {
+      "SceneName": "Weave_03",
+      "PosX": 18.78,
+      "PosY": 20.57,
+      "PosZ": 0.0,
+      "BossName": "苔藓之母二"
+    },
+    {
+      "SceneName": "Greymoor_05",
+      "PosX": 56.27,
+      "PosY": 5.57,
+      "PosZ": 0.0,
+      "BossName": "荒沼翼主二见"
+    },
+    {
+      "SceneName": "Greymoor_08",
+      "PosX": 44.56,
+      "PosY": 4.57,
+      "PosZ": 0.0,
+      "BossName": "荒沼翼主初见"
+    },
+    {
+      "SceneName": "Song_Tower_01",
+      "PosX": 51.27,
+      "PosY": 100.5677,
+      "PosZ": 0.0,
+      "BossName": "蕾丝二见"
+    },
+    {
+      "SceneName": "Bone_East_12",
+      "PosX": 92.857,
+      "PosY": 7.55,
+      "PosZ": 0.0,
+      "BossName": "蕾丝初见"
+    },
+    {
+      "SceneName": "Bone_East_18b",
+      "PosX": 172.25,
+      "PosY": 79.57,
+      "PosZ": 0.0,
+      "BossName": "被放逐的格尔"
+    },
+    {
+      "SceneName": "Coral_39",
+      "PosX": 123.38,
+      "PosY": 7.57,
+      "PosZ": 0.0,
+      "BossName": "边陲守望者"
+    },
+    {
+      "SceneName": "Bone_05",
+      "PosX": 81.6,
+      "PosY": 6.0,
+      "PosZ": 0.0,
+      "BossName": "钟道兽"
+    },
+    {
+      "SceneName": "Bone_15",
+      "PosX": 90.57,
+      "PosY": 15.64,
+      "PosZ": 0.0,
+      "BossName": "骷髅暴君"
+    },
+    {
+      "SceneName": "Belltown_Shrine",
+      "PosX": 49.55,
+      "PosY": 8.57,
+      "PosZ": 0.0,
+      "BossName": "黑寡妇"
+    }
+  ]
+}

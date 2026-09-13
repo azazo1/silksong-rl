@@ -1,0 +1,8 @@
+# mods/boss-rush/SilksongPath.props
+# 复制本文件为 SilksongPath.props, 并把 GameDir 改成自己的游戏目录.
+# 相对路径按本 mod 目录解析, 也直接写绝对路径.
+<Project>
+  <PropertyGroup>
+    <GameDir>../../game/Hollow Knight Silksong</GameDir>
+  </PropertyGroup>
+</Project>
