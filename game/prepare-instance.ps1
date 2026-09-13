@@ -341,4 +341,4 @@ Write-Step "真实占用: $($realFiles.Count) 个文件, $([math]::Round((($real
 Write-Step "存档目录: $saveRoot"
 Write-Step "Steam 接入: $(if ($KeepSteam -or (Test-Path -LiteralPath (Join-Path $instancePlugins "x86_64\$steamDllName"))) { '启用' } else { '已断开' })"
 Write-Step '启动: pwsh -File game/launch-instance.ps1'
-Write-Step "装 mod: pwsh -File mods/object-outlines/build.ps1 -Install -GameDir '$target'"
+Write-Step "插件目录: $(Join-Path $target 'BepInEx\plugins')"
