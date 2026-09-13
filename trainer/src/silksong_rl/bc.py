@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="权重衰减, 示范数据少时能压一压过拟合")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="留出多少比例做验证")
     parser.add_argument("--patience", type=int, default=30, help="验证损失连续多少轮不改善就提前停 (0 表示不启用)")
+    parser.add_argument(
+        "--class-weight-power",
+        type=float,
+        default=0.5,
+        help="类别加权强度: 权重 = (1/频率)^power, 用来对付'跳跃/攻击/缚丝几乎不出手'的塌缩, 0 表示不加权",
+    )
     parser.add_argument("--net-arch", default="256,256")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--verbose", action="store_true")
@@ -119,6 +125,11 @@ def main() -> None:
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     batch_size = max(1, min(args.batch_size, len(obs_train)))
 
+    weights = build_class_weights(actions[train_indices], args.class_weight_power)
+    if weights is not None:
+        weights = weights.to(device)
+        LOGGER.info("类别加权已启用 (power=%s): 每个动作维度内权重归一到均值 1", args.class_weight_power)
+
     # 网络在 cuda 上时, 数据也要跟过去.
     obs_train = obs_train.to(device)
     act_train = act_train.to(device)
@@ -145,8 +156,12 @@ def main() -> None:
             act_batch = act_train[batch]
 
             distribution = policy.get_distribution(obs_batch)
-            log_prob = distribution.log_prob(act_batch)
-            loss = -log_prob.mean()
+            per_dim_log_prob = per_dim_log_probability(distribution, act_batch)
+            if weights is not None:
+                sample_weights = gather_class_weights(weights, act_batch)
+                loss = -(per_dim_log_prob * sample_weights).sum(dim=1).mean() / per_dim_log_prob.shape[1]
+            else:
+                loss = -per_dim_log_prob.mean()
 
             optimizer.zero_grad()
             loss.backward()
@@ -169,6 +184,15 @@ def main() -> None:
                 message += " [" + " ".join(
                     f"{label}:{value:.2f}" for label, value in zip(ACTION_LABELS, per_dim, strict=False)
                 ) + "]"
+                # "按下去" 的召回率才是行为层面的关键: 这三个键不出手就打不死 Boss.
+                recalls = []
+                for dim, label in enumerate(ACTION_LABELS):
+                    pressed = act_val[:, dim] == 1
+                    if bool(pressed.any()):
+                        hit = (predicted[:, dim][pressed] == 1).float().mean().item()
+                        recalls.append(f"{label}按下:{hit:.2f}")
+                if recalls:
+                    message += " [" + " ".join(recalls) + "]"
             LOGGER.info(message)
 
         # 按验证损失留最好的那一版权重: 示范数据通常只有几千条, 训练久了会过拟合.
@@ -199,6 +223,47 @@ def main() -> None:
     LOGGER.info("模型已保存: %s", (output_dir / "bc.zip").resolve())
     LOGGER.info("归一化统计已保存: %s", (output_dir / "vecnormalize.pkl").resolve())
     LOGGER.info("下一步: uv run silksong-train --resume %s --timesteps 200000", output_dir / "bc.zip")
+
+
+def build_class_weights(actions: np.ndarray, power: float):
+    """按每个动作维度的类别频率算权重: (1/频率)^power, 再在维度内归一到均值 1.
+
+    示范里 "不按" 占绝大多数 (跳跃 74%, 攻击 81%, 缚丝 98%), 不加权时模型倾向于永远输出多数类,
+    表现出来就是智能体上场后几乎不出手.
+    """
+
+    if power <= 0.0:
+        return None
+
+    dims = actions.shape[1]
+    weights = np.zeros((dims, max(int(actions.max()) + 1, 2)), dtype=np.float32)
+    for dim in range(dims):
+        counts = np.bincount(actions[:, dim], minlength=weights.shape[1]).astype(np.float64)
+        counts = np.maximum(counts, 1.0)
+        frequency = counts / counts.sum()
+        raw = np.power(1.0 / frequency, power)
+        weights[dim] = (raw / raw.mean()).astype(np.float32)
+
+    return torch.as_tensor(weights, dtype=torch.float32)
+
+
+def gather_class_weights(weights: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    """取出每个样本在每个维度上的权重, 形状 [B, 维度]."""
+
+    return torch.stack([weights[dim][actions[:, dim]] for dim in range(actions.shape[1])], dim=1)
+
+
+def per_dim_log_probability(distribution, actions: torch.Tensor) -> torch.Tensor:
+    """MultiCategorical 分布下每个动作维度各自的对数概率, 形状 [B, 维度]."""
+
+    categoricals = getattr(distribution, "distribution", None)
+    if categoricals is None:
+        return distribution.log_prob(actions).unsqueeze(1)
+
+    return torch.stack(
+        [categorical.log_prob(actions[:, dim]) for dim, categorical in enumerate(categoricals)],
+        dim=1,
+    )
 
 
 def save_normalizer(path: Path, obs_dim: int, mean: np.ndarray, var: np.ndarray, count: int) -> None:

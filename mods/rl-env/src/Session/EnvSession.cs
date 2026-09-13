@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using BepInEx.Logging;
 using RLEnv.Actions;
 using RLEnv.Config;
+using RLEnv.Diagnostics;
 using RLEnv.Episode;
 using RLEnv.Observation;
 using RLEnv.TimeControl;
@@ -47,6 +48,8 @@ namespace RLEnv.Session
         private readonly EpisodeResetter _resetter;
 
         private readonly GameSpeedController _speed = new GameSpeedController();
+
+        private readonly TrainingGraphics _graphics = new TrainingGraphics();
 
         private Phase _phase;
 
@@ -181,6 +184,7 @@ namespace RLEnv.Session
                 VirtualPad.Release(2);
                 _speed.Apply(1f);
                 _humanMode = false;
+                ApplyTrainingGraphics(false);
 
                 // 训练侧中途断开时把没跑完的重置收掉, 否则下一个连接会被"上一次重置还没结束"挡住.
                 if (_resetter.Busy)
@@ -228,6 +232,7 @@ namespace RLEnv.Session
                 UnregisterFromPlayerLoop();
             }
 
+            ApplyTrainingGraphics(false);
             VirtualPad.Release(1);
             _combat.Dispose();
             _speed.Dispose();
@@ -252,7 +257,28 @@ namespace RLEnv.Session
             _server.SendHello(BuildHelloJson());
             _server.SendStateMap(_collector.States.ToJson());
             _speed.Apply(_config.IdleTimeScale.Value);
+            ApplyTrainingGraphics(true);
             SetPhase(Phase.Idle, "已连接, 等 Reset");
+        }
+
+        // 训练侧连着时降画质提速, 断开就恢复.
+        private void ApplyTrainingGraphics(bool training)
+        {
+            if (_graphics == null || !_config.TrainingGraphics.Value)
+            {
+                return;
+            }
+
+            if (training && !_graphics.Applied)
+            {
+                _graphics.Apply();
+                _log.LogInfo("训练期画质降级: " + _graphics.Describe());
+            }
+            else if (!training && _graphics.Applied)
+            {
+                _graphics.Restore();
+                _log.LogInfo("已恢复训练前的画质设置");
+            }
         }
 
         private void HandleCommand(EnvCommand command)

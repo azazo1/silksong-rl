@@ -12,6 +12,12 @@ namespace RLEnv.Config
 
             MuteAudio = config.Bind("General", "MuteAudio", true, "训练时把游戏音量静音 (只改运行时音量, 不动游戏设置)");
 
+            TrainingGraphics = config.Bind(
+                "General",
+                "TrainingGraphics",
+                true,
+                "训练侧连着的时候把分辨率与画质降到最低 (断开后恢复), 显著提高采样速度");
+
             Port = config.Bind(
                 "General",
                 "Port",
@@ -123,6 +129,8 @@ namespace RLEnv.Config
         internal ConfigEntry<bool> Enabled { get; private set; }
 
         internal ConfigEntry<bool> MuteAudio { get; private set; }
+
+        internal ConfigEntry<bool> TrainingGraphics { get; private set; }
 
         internal ConfigEntry<int> Port { get; private set; }
 

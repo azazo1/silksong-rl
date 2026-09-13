@@ -23,6 +23,13 @@ namespace RLEnv.Episode
         // 一扇门最多给多少帧去砍. 藤蔓门要打好几下, 帧数给宽一点.
         private const int PositionToleranceFrames = 400;
 
+        // 站定位置与门的距离: 太近会被门挤开, 太远则够不着.
+        private const float StandDistance = 1.25f;
+
+        // 挥针前允许主角偏离站点的幅度, 超了就把它拎回来.
+        // 打中门会给主角一个往后的后坐力, 只摆一次位置的话几刀之后就出了攻击范围, 表现为一直空挥.
+        private const float StandTolerance = 0.2f;
+
         private readonly List<Target> _targets = new List<Target>(4);
 
         private readonly ManualLogSource _log;
@@ -34,6 +41,12 @@ namespace RLEnv.Episode
         private bool _positioned;
 
         private int _attackPhase;
+
+        private Vector3 _standPosition;
+
+        private float _standSide;
+
+        private int _repositionCount;
 
         internal BlockerBreaker(ManualLogSource log)
         {
@@ -90,6 +103,7 @@ namespace RLEnv.Episode
             _framesOnTarget = 0;
             _positioned = false;
             _attackPhase = 0;
+            _repositionCount = 0;
 
             if (patterns == null || patterns.Length == 0)
             {
@@ -157,13 +171,18 @@ namespace RLEnv.Episode
             {
                 if (_log != null)
                 {
-                    _log.LogInfo("障碍物已破: " + target.Name);
+                    _log.LogInfo(string.Format(
+                        "障碍物已破: {0} (挥了 {1} 刀, 摆了 {2} 次位置)",
+                        target.Name,
+                        _attackPhase / FramesPerAttack + 1,
+                        _repositionCount));
                 }
 
                 _index++;
                 _positioned = false;
                 _framesOnTarget = 0;
                 _attackPhase = 0;
+                _repositionCount = 0;
                 VirtualPad.Release(2);
                 return !HasUnbroken;
             }
@@ -173,7 +192,11 @@ namespace RLEnv.Episode
             {
                 if (_log != null)
                 {
-                    _log.LogWarning("障碍物打不掉, 跳过: " + target.Name);
+                    _log.LogWarning(string.Format(
+                        "障碍物打不掉, 跳过: {0} (摆了 {1} 次位置, 挥了 {2} 刀)",
+                        target.Name,
+                        _repositionCount,
+                        _attackPhase / FramesPerAttack));
                 }
 
                 target.GiveUp();
@@ -193,21 +216,16 @@ namespace RLEnv.Episode
             {
                 Vector3 heroPosition = hero.transform.position;
                 float side = heroPosition.x >= position.x ? 1f : -1f;
-                Vector3 standPosition = new Vector3(position.x + side * 1.4f, position.y - 0.3f, 0f);
+                _standSide = side;
+                _standPosition = new Vector3(position.x + side * StandDistance, position.y - 0.3f, 0f);
+                Vector3 standPosition = _standPosition;
                 hero.transform.position = standPosition;
                 if (hero.Body != null)
                 {
                     hero.Body.linearVelocity = Vector2.zero;
                 }
 
-                if (side > 0f)
-                {
-                    hero.FaceLeft();
-                }
-                else
-                {
-                    hero.FaceRight();
-                }
+                FaceTarget(hero, side);
 
                 SnapCamera();
 
@@ -229,7 +247,14 @@ namespace RLEnv.Episode
 
             // 挥针: 按住两三帧再松开, 让 WasPressed 能一次次重新触发.
             _attackPhase++;
-            if (_attackPhase % FramesPerAttack < AttackHoldFrames)
+            int phase = _attackPhase % FramesPerAttack;
+            if (phase == 0)
+            {
+                // 每轮挥针前把主角摆回门口: 命中会把它往后推, 不管的话越打越远, 最后全是空挥.
+                ReassertStand(hero, target, position);
+            }
+
+            if (phase < AttackHoldFrames)
             {
                 EnvAction action = EnvAction.Neutral;
                 action.Attack = true;
@@ -241,6 +266,41 @@ namespace RLEnv.Episode
             }
 
             return false;
+        }
+
+        // 主角被后坐力推离门口时把它拎回站点; 还在原地就不动它, 免得打断正在进行的挥针.
+        private void ReassertStand(HeroController hero, Target target, Vector3 targetPosition)
+        {
+            Vector3 current = hero.transform.position;
+            if (Mathf.Abs(current.x - _standPosition.x) <= StandTolerance
+                && Mathf.Abs(current.y - _standPosition.y) <= StandTolerance * 2f)
+            {
+                return;
+            }
+
+            // 门本身可能被动过 (例如叶子抖了一下), 用最新的位置重算站点.
+            _standPosition = new Vector3(targetPosition.x + _standSide * StandDistance, targetPosition.y - 0.3f, 0f);
+            hero.transform.position = _standPosition;
+            if (hero.Body != null)
+            {
+                hero.Body.linearVelocity = Vector2.zero;
+            }
+
+            FaceTarget(hero, _standSide);
+            SnapCamera();
+            _repositionCount++;
+        }
+
+        private static void FaceTarget(HeroController hero, float side)
+        {
+            if (side > 0f)
+            {
+                hero.FaceLeft();
+            }
+            else
+            {
+                hero.FaceRight();
+            }
         }
 
         internal void Release()

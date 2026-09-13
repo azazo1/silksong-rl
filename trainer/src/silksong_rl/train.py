@@ -29,6 +29,10 @@ from .reward import RewardConfig
 
 LOGGER = logging.getLogger("silksong_rl.train")
 
+# 自定义的回合统计字段: Monitor 默认会用自己那份 episode 字典覆盖 info["episode"],
+# 要保留这些字段就必须显式声明.
+EPISODE_INFO_KEYS = ("damage_dealt", "damage_taken", "boss_kills", "player_deaths", "reset_seconds")
+
 
 class ProgressCallback(BaseCallback):
     """按固定步数间隔输出训练进度, 并把每个回合的结果追加到 episodes.jsonl."""
@@ -220,10 +224,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
 
     env = build_env(args, reward_config)
     # Monitor 默认会用自己那份 episode 统计覆盖 info["episode"], 这里把自定义字段带上.
-    monitored = Monitor(
-        env,
-        info_keywords=("damage_dealt", "damage_taken", "boss_kills", "player_deaths", "reset_seconds"),
-    )
+    monitored = Monitor(env, info_keywords=EPISODE_INFO_KEYS)
     vec_env = DummyVecEnv([lambda: monitored])
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
 
@@ -303,7 +304,7 @@ def run_evaluation(args: argparse.Namespace, reward_config: RewardConfig) -> Non
     run_dir.mkdir(parents=True, exist_ok=True)
 
     env = build_env(args, reward_config)
-    vec_env = DummyVecEnv([lambda: Monitor(env)])
+    vec_env = DummyVecEnv([lambda: Monitor(env, info_keywords=EPISODE_INFO_KEYS)])
     normalizer_path = Path(args.model).parent / "vecnormalize.pkl"
     if args.vecnormalize:
         normalizer_path = Path(args.vecnormalize)

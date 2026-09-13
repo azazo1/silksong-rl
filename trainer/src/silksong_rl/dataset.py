@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .fields import build_mask
+
 LOGGER = logging.getLogger("silksong_rl.dataset")
 
 
@@ -56,6 +58,11 @@ def load_demonstrations(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     all_act = np.concatenate(actions, axis=0)
     if field_names:
         LOGGER.info("观测字段: %s", ", ".join(field_names))
+        mask = build_mask(field_names)
+        if mask:
+            # 与训练侧保持一致: 这些列在示范与训练之间取值范围不同, 清零后网络才会忽略它们.
+            all_obs[:, mask] = 0.0
+            LOGGER.info("已屏蔽示范中的字段: %s", ", ".join(field_names[index] for index in mask))
 
     describe_actions(all_act)
     return all_obs, all_act

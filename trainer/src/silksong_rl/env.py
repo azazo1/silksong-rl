@@ -15,6 +15,7 @@ import numpy as np
 from gymnasium import spaces
 
 from .client import EnvClient, EnvProtocolError, Observation
+from .fields import build_mask
 from .reward import RewardConfig, compute_reward
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class SilksongBossEnv(gym.Env):
         self.client = client
         self.reward_config = reward_config or RewardConfig()
         self.reconnect_attempts = reconnect_attempts
+        self._mask = np.asarray([], dtype=np.int64)
 
         if connect and not client.connected:
             client.connect()
@@ -65,6 +67,22 @@ class SilksongBossEnv(gym.Env):
         )
         self.action_space = spaces.MultiDiscrete(np.asarray(self.client.action_shape, dtype=np.int64))
 
+        # 会话相关字段 (例如 physics_frame) 在示范与训练之间取值范围不同, 清零让策略忽略它们.
+        mask = build_mask(self.client.field_names)
+        self._mask = np.asarray(mask, dtype=np.int64)
+        if mask:
+            LOGGER.info("已屏蔽观测字段: %s", ", ".join(self.client.field_names[i] for i in mask))
+
+    def _postprocess(self, values: np.ndarray) -> np.ndarray:
+        """清零被屏蔽的列, 返回给策略看的观测."""
+
+        array = np.asarray(values, dtype=np.float32)
+        if self._mask.size:
+            array = array.copy()
+            array[self._mask] = 0.0
+
+        return array
+
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
 
@@ -87,7 +105,7 @@ class SilksongBossEnv(gym.Env):
             "reset_seconds": self._last_reset_seconds,
         }
 
-        return observation.values.astype(np.float32), self._build_info(observation)
+        return self._postprocess(observation.values), self._build_info(observation)
 
     def step(self, action) -> tuple[np.ndarray, float, bool, bool, dict]:
         observation = self._with_reconnect(lambda: self.client.step(action), "step")
@@ -118,7 +136,7 @@ class SilksongBossEnv(gym.Env):
             # sb3 的 Monitor(info_keywords=...) 只认 info 顶层的字段.
             info.update(self.episode_stats)
 
-        return observation.values.astype(np.float32), float(reward), terminated, truncated, info
+        return self._postprocess(observation.values), float(reward), terminated, truncated, info
 
     def close(self) -> None:
         self.client.close()
