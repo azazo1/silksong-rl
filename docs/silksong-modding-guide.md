@@ -237,6 +237,14 @@ AssetHelper 的关键约束 (来自其 Quickstart):
 
 BepInEx 自身在 `<游戏目录>/BepInEx/core/`, 其中的 `0Harmony.dll` 就是补丁库 HarmonyX. 自己搭 msbuild 工程时, 直接引用上面这些 dll 即可 (官方模板则通过 `Silksong.GameLibs` 这类 bundler 包间接引用).
 
+本仓库把上面除 `PlayMaker.dll` 与 Unity 模块以外的程序集反编译了一份, 放在 `disassembly/`: 全局命名空间的类平铺在顶层, 其余按命名空间分到子目录, `Silksong-decompiled.sln` 可以把它们一起在 IDE 里打开. 这些工程只用于阅读和跳转, 不要试图编译, 反编译产物与 Team Cherry 的原始工程并不等价. 该目录不入版本库, 换机器或游戏更新后重新生成即可:
+
+```shell
+pwsh -File disassembly/decompile.ps1
+```
+
+脚本默认读仓库内的隔离子实例, 也可以用 `-GameDir` 指向源安装, 或用 `-Assemblies PlayMaker.dll` 只补某个第三方程序集.
+
 典型工作流: dnSpy 找到类和方法 -> UnityExplorer 在运行时确认对象与字段的实际取值 -> FSMExpress 补上看不到的状态机逻辑 -> 打补丁 -> 控制台日志验证.
 
 | 工具 | 用途 |
