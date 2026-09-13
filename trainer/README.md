@@ -75,6 +75,12 @@ uv run silksong-train --resume runs/bc/bc.zip --finetune --timesteps 200000 --sp
 训练产物里除了模型与归一化统计, 还有 `episodes.jsonl`: 每个回合一行, 记录步数, 回报, 长度,
 造成/受到伤害, 击杀与阵亡, 便于训练结束后离线分析.
 
+`--resume` 时命令行给的超参必须走 `PPO.load(..., **kwargs)`: SB3 的 load 会先用存档里的值覆盖
+`model.__dict__`, 再用 kwargs 覆盖一次, 所以写成"load 完再赋值"或"干脆不传"都会被存档里的
+`n_steps` / `batch_size` / `learning_rate` / `ent_coef` / `target_kl` 悄悄顶掉 (行为克隆产出的
+存档里带的是 `n_steps=2048, batch_size=64, ent_coef=0, target_kl=None`), 后果是微调以远大于
+预期的步长更新, 策略在几千步内被冲坏. 每次训练开始都会打印一行 `生效超参`, 拿它对照预期即可.
+
 ## 训练
 
 ```shell
@@ -93,7 +99,14 @@ uv run tensorboard --logdir runs
 ```
 
 产物都落在 `runs/<实验名>/`: `final.zip` (模型), `checkpoints/` (周期存档),
-`vecnormalize.pkl` (观测归一化统计), `tb/` (TensorBoard).
+`vecnormalize.pkl` (观测归一化统计), `tb/` (TensorBoard), `episodes.jsonl` (逐回合日志).
+
+随时看某个实验的分段趋势 (不连游戏, 训练进行中也能看):
+
+```shell
+uv run silksong-report --run runs/moss-mother-a --bins 6
+uv run silksong-report --all
+```
 
 ## 评估
 
@@ -139,6 +152,11 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 观测字段由插件在连接时通过 `Hello` 消息上报 (`mods/rl-env/src/Observation/ObservationSchema.cs`
 是唯一权威定义), 训练侧按名字取值, 不硬编码下标. 训练用 `VecNormalize` 做观测归一化.
 
+其中 `physics_frame` 与 `boss_state_id` / `boss_fsm0..3_state_id` 这几列在训练侧被固定清零
+(见 `fields.py`): 前者的取值取决于游戏进程开了多久, 后者的编号是插件按发现顺序自增分配的,
+每个会话重新编号, 示范与训练之间不可比. 清零意味着策略看不到 Boss 的动作状态, 只能靠位置,
+速度与危险框来判断, 用这些字段当特征需要额外的"按状态名重映射"步骤.
+
 ## 目录
 
 | 路径 | 内容 |
@@ -147,5 +165,10 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 | `src/silksong_rl/client.py` | TCP 客户端, 负责收发与消息分发 |
 | `src/silksong_rl/env.py` | Gymnasium 环境 |
 | `src/silksong_rl/reward.py` | 奖励计算 |
+| `src/silksong_rl/fields.py` | 需要在训练侧屏蔽的会话相关观测列 |
 | `src/silksong_rl/train.py` | 训练与评估入口 |
+| `src/silksong_rl/record.py` | 人类示范录制 |
+| `src/silksong_rl/dataset.py` | 示范数据的载入与归一化 |
+| `src/silksong_rl/bc.py` | 行为克隆 |
+| `src/silksong_rl/smoke.py` | 与游戏联调的冒烟测试 |
 | `src/silksong_rl/selfcheck.py` | 不依赖游戏的自检 |

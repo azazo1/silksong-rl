@@ -18,6 +18,7 @@ silksong-selfcheck = "silksong_rl.selfcheck:main"
 silksong-smoke = "silksong_rl.smoke:main"
 silksong-record = "silksong_rl.record:main"
 silksong-bc = "silksong_rl.bc:main"
+silksong-report = "silksong_rl.report:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -103,6 +103,12 @@ class SilksongBossEnv(gym.Env):
             "boss_kills": 0.0,
             "player_deaths": 0.0,
             "reset_seconds": self._last_reset_seconds,
+            # 诊断量: 只靠"造成伤害"看不出打不动的原因, 这两个数能区分
+            # "根本不出手" 与 "一直挥空": 前者 attack_steps 很小, 后者挥刀多但每刀伤害低.
+            "attack_steps": 0.0,
+            "attack_pressed_steps": 0.0,
+            "bind_pressed_steps": 0.0,
+            "min_boss_distance": float("inf"),
         }
 
         return self._postprocess(observation.values), self._build_info(observation)
@@ -117,6 +123,7 @@ class SilksongBossEnv(gym.Env):
         self.episode_stats["damage_taken"] += float(observation.named.get("damage_taken_step", 0.0))
         self.episode_stats["boss_kills"] += float(observation.named.get("boss_killed_step", 0.0))
         self.episode_stats["player_deaths"] += float(observation.named.get("player_died_step", 0.0))
+        self._accumulate_swing_stats(observation, action)
 
         terminated = observation.terminated
         truncated = observation.truncated
@@ -128,6 +135,7 @@ class SilksongBossEnv(gym.Env):
         info["reset_seconds"] = self._last_reset_seconds
 
         if terminated or truncated:
+            self._finalize_stats()
             info["episode"] = {
                 "r": self._episode_reward,
                 "l": self._episode_steps,
@@ -142,6 +150,34 @@ class SilksongBossEnv(gym.Env):
         self.client.close()
 
     # --- 内部 -------------------------------------------------------------
+
+    def _accumulate_swing_stats(self, observation: Observation, action) -> None:
+        """记录这一回合挥了多少刀, 真的贴到 Boss 身边时距离是多少."""
+
+        stats = self.episode_stats
+        named = observation.named
+
+        if float(named.get("player_attacking", 0.0)) > 0.5:
+            stats["attack_steps"] += 1.0
+
+        flat = np.asarray(action).reshape(-1)
+        if flat.size >= 4 and int(flat[3]) == 1:
+            stats["attack_pressed_steps"] += 1.0
+        if flat.size >= 5 and int(flat[4]) == 1:
+            stats["bind_pressed_steps"] += 1.0
+
+        distance = float(named.get("boss_distance_n", -1.0))
+        if distance >= 0.0 and distance < stats["min_boss_distance"]:
+            stats["min_boss_distance"] = distance
+
+    def _finalize_stats(self) -> None:
+        """回合结束时把区间量换算成便于比较的派生量."""
+
+        stats = self.episode_stats
+        swings = stats["attack_steps"]
+        stats["damage_per_swing"] = stats["damage_dealt"] / swings if swings > 0.0 else 0.0
+        if stats["min_boss_distance"] == float("inf"):
+            stats["min_boss_distance"] = -1.0
 
     def _build_info(self, observation: Observation) -> dict[str, Any]:
         info: dict[str, Any] = {

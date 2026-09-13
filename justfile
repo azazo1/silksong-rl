@@ -42,7 +42,15 @@ eval model *args:
 # 行为克隆并直接用 PPO 微调: just bootstrap records/moss-mother-v2
 bootstrap data *args:
     cd trainer && uv run silksong-bc --data {{data}} {{args}}
-    cd trainer && uv run silksong-train --resume runs/bc/bc.zip --timesteps 200000 --speed 6
+    cd trainer && uv run silksong-train --resume runs/bc/bc.zip --finetune --timesteps 200000 --speed 6
+
+# 汇总某个实验的逐回合日志, 不连游戏: just report runs/bc-ft-v4
+report run *args:
+    cd trainer && uv run silksong-report --run {{run}} {{args}}
+
+# 汇总 runs 下所有实验的逐回合日志
+report-all:
+    cd trainer && uv run silksong-report --all
 
 # 查看训练曲线
 tensorboard:

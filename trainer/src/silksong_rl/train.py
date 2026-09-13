@@ -31,7 +31,18 @@ LOGGER = logging.getLogger("silksong_rl.train")
 
 # 自定义的回合统计字段: Monitor 默认会用自己那份 episode 字典覆盖 info["episode"],
 # 要保留这些字段就必须显式声明.
-EPISODE_INFO_KEYS = ("damage_dealt", "damage_taken", "boss_kills", "player_deaths", "reset_seconds")
+EPISODE_INFO_KEYS = (
+    "damage_dealt",
+    "damage_taken",
+    "boss_kills",
+    "player_deaths",
+    "reset_seconds",
+    "attack_steps",
+    "attack_pressed_steps",
+    "bind_pressed_steps",
+    "min_boss_distance",
+    "damage_per_swing",
+)
 
 
 class ProgressCallback(BaseCallback):
@@ -53,6 +64,7 @@ class ProgressCallback(BaseCallback):
         self._episodes = 0
         self._damage_dealt = 0.0
         self._damage_taken = 0.0
+        self._attack_steps = 0.0
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos") or []
@@ -68,6 +80,7 @@ class ProgressCallback(BaseCallback):
             self._recent_lengths = self._recent_lengths[-self.window :]
             self._damage_dealt += float(episode.get("damage_dealt", 0.0))
             self._damage_taken += float(episode.get("damage_taken", 0.0))
+            self._attack_steps += float(episode.get("attack_steps", 0.0))
 
             if episode.get("boss_kills", 0.0) > 0.0:
                 self._wins += 1
@@ -103,9 +116,11 @@ class ProgressCallback(BaseCallback):
         )
         if self._episodes:
             LOGGER.info(
-                "累计 造成伤害 %.0f, 受到伤害 %.0f",
+                "累计 造成伤害 %.0f, 受到伤害 %.0f, 挥刀 %d 步, 平均每刀伤害 %.2f",
                 self._damage_dealt,
                 self._damage_taken,
+                int(self._attack_steps),
+                self._damage_dealt / self._attack_steps if self._attack_steps > 0 else 0.0,
             )
 
         for key, value in (
@@ -138,6 +153,11 @@ class ProgressCallback(BaseCallback):
             "boss_kills": float(episode.get("boss_kills", 0.0)),
             "player_deaths": float(episode.get("player_deaths", 0.0)),
             "reset_seconds": float(episode.get("reset_seconds", 0.0)),
+            "attack_steps": float(episode.get("attack_steps", 0.0)),
+            "attack_pressed_steps": float(episode.get("attack_pressed_steps", 0.0)),
+            "bind_pressed_steps": float(episode.get("bind_pressed_steps", 0.0)),
+            "min_boss_distance": float(episode.get("min_boss_distance", -1.0)),
+            "damage_per_swing": float(episode.get("damage_per_swing", 0.0)),
         }
 
         try:
@@ -243,7 +263,32 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
 
     if args.resume:
         LOGGER.info("从 %s 继续训练", args.resume)
-        model = PPO.load(args.resume, env=vec_env, tensorboard_log=str(run_dir / "tb"))
+        # 注意: PPO.load 会把存档里的超参原样恢复 (内部先 update(data) 再 update(kwargs)),
+        # 所以命令行给的 n_steps / batch_size / learning_rate 等等必须作为 kwargs 传进 load,
+        # 在 load 之后再赋值则不会重建 rollout buffer, 而完全不传就会被存档里的值悄悄覆盖.
+        model = PPO.load(
+            args.resume,
+            env=vec_env,
+            tensorboard_log=str(run_dir / "tb"),
+            n_steps=args.n_steps,
+            batch_size=args.batch_size,
+            learning_rate=learning_rate,
+            gamma=args.gamma,
+            ent_coef=ent_coef,
+            target_kl=target_kl,
+        )
+        LOGGER.info(
+            "生效超参: n_steps=%d, batch_size=%d, n_epochs=%d, learning_rate=%s, gamma=%s, "
+            "ent_coef=%s, target_kl=%s, 策略网络=%s",
+            model.n_steps,
+            model.batch_size,
+            model.n_epochs,
+            model.learning_rate,
+            model.gamma,
+            model.ent_coef,
+            model.target_kl,
+            model.policy_kwargs.get("net_arch") if isinstance(model.policy_kwargs, dict) else None,
+        )
         # 行为克隆产出的模型旁边会带一份归一化统计, 微调时必须沿用, 否则网络看到的输入分布不一致.
         normalizer_path = Path(args.vecnormalize) if args.vecnormalize else Path(args.resume).parent / "vecnormalize.pkl"
         if normalizer_path.exists():
