@@ -38,6 +38,8 @@ namespace RLEnv
 
         private EnvOverlay _overlay;
 
+        private ObservationBoxRenderer _boxes;
+
         private BossSaveRepository _saves;
 
         private float _previousAudioVolume = 1f;
@@ -89,6 +91,14 @@ namespace RLEnv
             _session = new EnvSession(this, _config, _server, Logger, _saves);
             _overlay = new EnvOverlay(this);
 
+            _boxes = new ObservationBoxRenderer();
+            if (!_boxes.Prepare())
+            {
+                Logger.LogWarning("观测线框渲染器初始化失败, 线框功能不可用");
+            }
+
+            SetObservationBoxes(_config.ShowObservationBoxes.Value);
+
             if (_config.Enabled.Value)
             {
                 _server.Start();
@@ -123,10 +133,48 @@ namespace RLEnv
                 _session.Tick();
             }
 
+            if (Input.GetKeyDown(_config.BoxesKey.Value.MainKey))
+            {
+                SetObservationBoxes(!_boxes.Enabled);
+            }
+
+            if (_boxes != null && _boxes.Enabled && _session != null)
+            {
+                // 每帧刷一遍, 线框才是实时的 (和训练时的采样是两套路径, 互不影响).
+                _session.CollectDebugView();
+                _boxes.Rebuild(_session.DebugBoxes);
+            }
+
+            if (_boxes != null)
+            {
+                _boxes.Render();
+            }
+
             if (_overlay != null)
             {
                 _overlay.Tick();
             }
+        }
+
+        internal ObservationBoxRenderer Boxes
+        {
+            get { return _boxes; }
+        }
+
+        private void SetObservationBoxes(bool enabled)
+        {
+            if (_boxes == null)
+            {
+                return;
+            }
+
+            _boxes.Enabled = enabled;
+            if (_session != null)
+            {
+                _session.SetCollectDebugBoxes(enabled);
+            }
+
+            Logger.LogInfo(enabled ? "观测线框已打开" : "观测线框已关闭");
         }
 
         private void OnGUI()

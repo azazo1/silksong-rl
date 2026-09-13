@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using BepInEx.Logging;
 using RLEnv.Actions;
 using RLEnv.Config;
@@ -96,6 +97,26 @@ namespace RLEnv.Session
         internal ObservationCollector Collector
         {
             get { return _collector; }
+        }
+
+        // 调试用: 打开后每帧刷新"观测到的矩形", 供屏幕线框渲染.
+        internal void SetCollectDebugBoxes(bool enabled)
+        {
+            _collector.CollectDebugBoxes = enabled;
+            if (enabled)
+            {
+                _collector.RescanHazards();
+            }
+        }
+
+        internal void CollectDebugView()
+        {
+            _collector.CollectDebugView();
+        }
+
+        internal List<Diagnostics.ObservationBox> DebugBoxes
+        {
+            get { return _collector.DebugBoxes; }
         }
 
         internal string StatusMessage
@@ -302,6 +323,7 @@ namespace RLEnv.Session
 
             _bosses.Resolve(true);
             _collector.CaptureArena();
+            _collector.RescanHazards();
             _combat.BeginStep();
             _combat.Refresh();
 

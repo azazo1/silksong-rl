@@ -39,24 +39,66 @@ SCHEMA_PATH = Path(__file__).resolve().parents[3] / "mods" / "rl-env" / "src" / 
 
 
 def load_csharp_schema() -> list[str]:
-    """从 C# 的 ObservationSchema.cs 里抽出字段名数组, 保证两边不会悄悄跑偏."""
+    """从 C# 的 ObservationSchema.cs 还原出字段名列表, 保证两边不会悄悄跑偏.
+
+    字段表的构造方式是 "固定段 + 重复段 (小怪 / 危险框 / Boss FSM)", 重复段的字段名要按同样的
+    顺序和下标的拼接规则还原, 因此这里把 C# 里的构造逻辑照抄一遍.
+    """
 
     if not SCHEMA_PATH.exists():
         raise FileNotFoundError(f"找不到 C# 观测字段表: {SCHEMA_PATH}")
 
     text = SCHEMA_PATH.read_text(encoding="utf-8")
-    start = text.index("private static readonly string[] Names = new string[]")
-    body = text[start:]
-    end = body.index("};")
-    names = re.findall(r'"([a-z0-9_]+)"', body[:end])
-    if not names:
-        raise AssertionError("没有从 C# 字段表里解析出任何字段")
 
-    enum_count = len(re.findall(r"^\s{8}[A-Z][A-Za-z0-9]*,", text, flags=re.MULTILINE))
-    if enum_count != len(names):
-        raise AssertionError(f"C# 字段名 {len(names)} 个, 枚举项 {enum_count} 个, 两边不一致")
+    def array_literal(name: str) -> list[str]:
+        marker = f"{name} = new string[]"
+        start = text.index(marker)
+        body = text[start:]
+        end = body.index("};")
+        values = re.findall(r'"([A-Za-z0-9_]+)"', body[:end])
+        if not values:
+            raise AssertionError(f"没有从 {name} 里解析出任何字段")
+        return values
+
+    def const_int(name: str) -> int:
+        match = re.search(rf"{name} = (\d+);", text)
+        if not match:
+            raise AssertionError(f"没有解析出常量 {name}")
+        return int(match.group(1))
+
+    fixed = array_literal("private static readonly string[] FixedNames")
+    enemy_fields = array_literal("internal static readonly string[] EnemyFieldNames")
+    hazard_fields = array_literal("internal static readonly string[] HazardFieldNames")
+    boss_fsm_fields = array_literal("internal static readonly string[] BossFsmFieldNames")
+
+    names = list(fixed)
+    for slot in range(const_int("MaxEnemies")):
+        names.extend(f"enemy{slot}_{field}" for field in enemy_fields)
+    for slot in range(const_int("MaxHazards")):
+        names.extend(f"hazard{slot}_{field}" for field in hazard_fields)
+    for slot in range(const_int("MaxBossFsms")):
+        names.extend(f"boss_fsm{slot}_{field}" for field in boss_fsm_fields)
+
+    enum_count = count_enum_members("ObsField")
+    if enum_count != len(fixed):
+        raise AssertionError(f"固定字段名 {len(fixed)} 个, ObsField 枚举 {enum_count} 项, 两边不一致")
 
     return names
+
+
+def count_enum_members(enum_name: str) -> int:
+    """数一个枚举有多少项 (枚举定义在 ObsField.cs 里)."""
+
+    enum_path = SCHEMA_PATH.parent / "ObsField.cs"
+    if not enum_path.exists():
+        raise FileNotFoundError(f"找不到枚举定义: {enum_path}")
+
+    text = enum_path.read_text(encoding="utf-8")
+    marker = f"internal enum {enum_name}"
+    start = text.index(marker)
+    body = text[start:]
+    end = body.index("}")
+    return len(re.findall(r"^\s+[A-Z][A-Za-z0-9]*,", body[:end], flags=re.MULTILINE))
 
 
 def test_protocol_roundtrip() -> None:
@@ -251,6 +293,45 @@ def test_env_against_fake_server() -> None:
     LOGGER.info("假游戏端联调 (reset/step/终止/再重置): 通过")
 
 
+def test_training_dry_run() -> None:
+    """用假游戏端把 train.py 的完整训练路径 (VecNormalize + PPO + Monitor) 真跑几十步."""
+
+    import argparse
+    import shutil
+
+    from . import train as train_module
+
+    field_names = load_csharp_schema()
+    server = FakeGameServer(field_names, terminate_after=16)
+    server.start()
+    time.sleep(0.1)
+
+    run_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-training"
+    if run_dir.exists():
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+    parser = train_module.build_parser()
+    args = parser.parse_args(
+        [
+            "--port", str(server.port),
+            "--timesteps", "64",
+            "--run-name", "dry-run",
+            "--runs-dir", str(run_dir),
+            "--n-steps", "32",
+            "--batch-size", "16",
+            "--log-interval", "32",
+            "--checkpoint-every", "0",
+        ]
+    )
+
+    try:
+        model_path = train_module.run_training(args, train_module.RewardConfig())
+        assert model_path.exists(), model_path
+        LOGGER.info("训练干跑: 通过 (模型 %s)", model_path.name)
+    finally:
+        server.stop()
+
+
 def main() -> None:
     # Windows 控制台默认不是 UTF-8, 中文日志会变乱码.
     for stream in (sys.stdout, sys.stderr):
@@ -264,6 +345,7 @@ def main() -> None:
     test_protocol_roundtrip()
     test_reward()
     test_env_against_fake_server()
+    test_training_dry_run()
     LOGGER.info("全部自检通过")
 
 

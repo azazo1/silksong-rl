@@ -56,6 +56,8 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 | `Episode/BlockerSpeed` | 4 | 破门阶段的时间倍率 (破门是纯体力活, 加速安全) |
 | `UI/ShowOverlay` | true | 显示调试面板 |
 | `UI/OverlayKey` | F9 | 开关调试面板 |
+| `UI/ShowObservationBoxes` | false | 把观测里用到的矩形画成屏幕线框 |
+| `UI/BoxesKey` | F10 | 开关观测线框的快捷键 |
 
 ## 工作方式
 
@@ -79,6 +81,22 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 6. 等 `HasFinishedEnteringScene && !IsInSceneTransition && !GameManager.IsWaitingForSceneReady
    && GameState == PLAYING && hero.isHeroInPosition`, 再等 Boss 的 `HealthManager` 激活并空转几帧;
 7. 必要时调用 `BattleScene.StartBattle()` 主动开战 (不依赖主角走进触发框).
+
+### 观测线框 (排查用)
+
+按 `F10` 打开: 插件会把"这一步观测里实际用到的世界空间矩形"画成线框, 用来肉眼核对
+观测与画面是否一致. 配色:
+
+| 颜色 | 含义 |
+| --- | --- |
+| 青色 | 主角碰撞箱 |
+| 品红 | Boss 碰撞箱 |
+| 绿色 | 进入观测名额的最近小怪 |
+| 红色 | 当前生效的危险框 (`DamageHero` 且已启用) |
+| 黄色 | 附近存在但未生效的危险框 |
+| 蓝色 | 本回合固定的场地矩形 |
+
+线框与训练采样是两条独立路径 (每帧刷新, 不注入输入), 开着它不影响训练, 但会有一点额外开销.
 
 ### 人类示范录制
 
@@ -116,6 +134,11 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 
 观测字段的权威定义在 `src/Observation/ObservationSchema.cs`, 训练侧从 `Hello` 里读名字,
 不硬编码下标. 训练侧的对应实现在 `trainer/src/silksong_rl/protocol.py`.
+
+字段分四段 (共 216 个): 主角 40, Boss 18, 场地 4, 时间与事件 8, 最近 6 个小怪各 11 项,
+最近 8 个危险框各 9 项, Boss 前 4 个 FSM 各 2 项. 小怪取自 `HealthManager` 注册表
+(只算敌意层级), 危险框取自场景里所有 `DamageHero` (敌人攻击判定, 陷阱, 掉落物, 投射物),
+两者都按"离主角最近"截断.
 
 ## 排查
 

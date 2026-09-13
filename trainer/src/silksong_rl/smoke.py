@@ -32,11 +32,14 @@ INTERESTING_FIELDS = (
     "player_on_ground",
     "player_attacking",
     "player_health",
+    "player_silk",
     "boss_alive",
     "boss_health",
     "boss_pos_x_world",
     "boss_pos_y_world",
     "boss_distance_n",
+    "enemy_count",
+    "hazard_count",
     "physics_frame",
 )
 

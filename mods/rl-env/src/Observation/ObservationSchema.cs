@@ -18,18 +18,18 @@ namespace RLEnv.Observation
 
         internal const int MaxBossFsms = 4;
 
-        internal const string[] EnemyFieldNames = new string[]
+        internal static readonly string[] EnemyFieldNames = new string[]
         {
             "valid", "rel_x_n", "rel_y_n", "vel_x", "vel_y",
             "health", "health_ratio", "half_w", "half_h", "facing", "enemy_type"
         };
 
-        internal const string[] HazardFieldNames = new string[]
+        internal static readonly string[] HazardFieldNames = new string[]
         {
             "valid", "rel_x_n", "rel_y_n", "half_w", "half_h", "distance_n", "damage", "hazard_type", "enabled"
         };
 
-        internal const string[] BossFsmFieldNames = new string[]
+        internal static readonly string[] BossFsmFieldNames = new string[]
         {
             "valid", "state_id"
         };

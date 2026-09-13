@@ -67,6 +67,10 @@ namespace RLEnv.Config
             ShowOverlay = config.Bind("UI", "ShowOverlay", true, "显示调试用的状态面板");
             OverlayKey = config.Bind("UI", "OverlayKey", new KeyboardShortcut(KeyCode.F9), "开关状态面板的快捷键");
 
+            ShowObservationBoxes = config.Bind("UI", "ShowObservationBoxes", false, "把观测里用到的矩形 (主角/Boss/小怪/危险框/场地) 画成屏幕线框");
+
+            BoxesKey = config.Bind("UI", "BoxesKey", new KeyboardShortcut(KeyCode.F10), "开关观测线框的快捷键");
+
             ResetTimeout = config.Bind(
                 "Episode",
                 "ResetTimeout",
@@ -143,6 +147,10 @@ namespace RLEnv.Config
         internal ConfigEntry<bool> ShowOverlay { get; private set; }
 
         internal ConfigEntry<KeyboardShortcut> OverlayKey { get; private set; }
+
+        internal ConfigEntry<bool> ShowObservationBoxes { get; private set; }
+
+        internal ConfigEntry<KeyboardShortcut> BoxesKey { get; private set; }
 
         internal ConfigEntry<float> ResetTimeout { get; private set; }
 

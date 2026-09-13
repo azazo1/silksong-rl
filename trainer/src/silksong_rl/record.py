@@ -60,33 +60,39 @@ def main() -> None:
         actions: list[list[int]] = []
         started = time.monotonic()
         last_report = started
+        interrupted = False
 
-        while True:
-            kind, payload = client.read_message(timeout=None)
-            if kind is protocol.MessageType.RECORD:
-                step_index, values, action = payload  # type: ignore[misc]
-                observations.append(np.asarray(values, dtype=np.float32))
-                actions.append(list(action))
-                now = time.monotonic()
-                if now - last_report >= 5.0:
-                    last_report = now
-                    LOGGER.info(
-                        "已录 %d 个样本 (%.1f 秒), 主角血量 %.0f, Boss 血量 %.0f",
-                        len(observations),
-                        now - started,
-                        values[client.field_names.index("player_health")] if "player_health" in client.field_names else -1,
-                        values[client.field_names.index("boss_health")] if "boss_health" in client.field_names else -1,
-                    )
-            elif kind is protocol.MessageType.OBSERVATION:
-                _, flags, _ = payload  # type: ignore[misc]
-                if flags & (protocol.FLAG_TERMINATED | protocol.FLAG_TRUNCATED):
-                    break
-            elif kind is protocol.MessageType.STATUS:
-                LOGGER.debug("游戏端状态: %s", payload)
-            elif kind is protocol.MessageType.STATE_MAP:
-                client.merge_state_map(payload)
-            elif kind is protocol.MessageType.ERROR:
-                LOGGER.warning("游戏端报错: %s", payload)
+        try:
+            while True:
+                kind, payload = client.read_message(timeout=None)
+                if kind is protocol.MessageType.RECORD:
+                    step_index, values, action = payload  # type: ignore[misc]
+                    observations.append(np.asarray(values, dtype=np.float32))
+                    actions.append(list(action))
+                    now = time.monotonic()
+                    if now - last_report >= 5.0:
+                        last_report = now
+                        LOGGER.info(
+                            "已录 %d 个样本 (%.1f 秒), 主角血量 %.0f, Boss 血量 %.0f",
+                            len(observations),
+                            now - started,
+                            pick(values, client.field_names, "player_health"),
+                            pick(values, client.field_names, "boss_health"),
+                        )
+                elif kind is protocol.MessageType.OBSERVATION:
+                    _, flags, _ = payload  # type: ignore[misc]
+                    if flags & (protocol.FLAG_TERMINATED | protocol.FLAG_TRUNCATED):
+                        break
+                elif kind is protocol.MessageType.STATUS:
+                    LOGGER.debug("游戏端状态: %s", payload)
+                elif kind is protocol.MessageType.STATE_MAP:
+                    client.merge_state_map(payload)
+                elif kind is protocol.MessageType.ERROR:
+                    LOGGER.warning("游戏端报错: %s", payload)
+        except KeyboardInterrupt:
+            # 中途 Ctrl+C 时把已经录到的样本存下来, 不白费这一局.
+            interrupted = True
+            LOGGER.warning("收到中断, 保存已录到的 %d 个样本", len(observations))
 
         client.set_human_mode(False)
 
@@ -103,9 +109,22 @@ def main() -> None:
         else:
             LOGGER.warning("第 %d 回合没有录到样本", episode)
 
+        if interrupted:
+            break
+
     client.close()
     LOGGER.info("录制结束, 共 %d 个样本, 输出目录 %s", total_samples, output_dir.resolve())
     LOGGER.info("下一步: uv run silksong-bc --data %s", output_dir)
+
+
+def pick(values, field_names: list[str], name: str) -> float:
+    """按名字取一个观测值, 字段不存在时返回 -1."""
+
+    if name not in field_names:
+        return -1.0
+
+    index = field_names.index(name)
+    return float(values[index]) if index < len(values) else -1.0
 
 
 if __name__ == "__main__":

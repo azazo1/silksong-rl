@@ -33,6 +33,9 @@ LOGGER = logging.getLogger("silksong_rl.bc")
 # 这里用的裁剪范围与 stable-baselines3 的 VecNormalize 默认值一致.
 CLIP_OBS = 10.0
 
+# 动作维度的中文名, 只用于日志.
+ACTION_LABELS = ("左右", "上下", "跳跃", "攻击", "缚丝")
+
 
 class SpecEnv(gym.Env):
     """只提供 observation_space / action_space 的空环境, 给 PPO 建网络用."""
@@ -56,7 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=30, help="训练轮数")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-4, help="权重衰减, 示范数据少时能压一压过拟合")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="留出多少比例做验证")
+    parser.add_argument("--patience", type=int, default=30, help="验证损失连续多少轮不改善就提前停 (0 表示不启用)")
     parser.add_argument("--net-arch", default="256,256")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--verbose", action="store_true")
@@ -111,7 +116,7 @@ def main() -> None:
     policy.train()
     device = policy.device
     LOGGER.info("训练设备: %s", device)
-    optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     batch_size = max(1, min(args.batch_size, len(obs_train)))
 
     # 网络在 cuda 上时, 数据也要跟过去.
@@ -123,6 +128,11 @@ def main() -> None:
 
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    best_loss = float("inf")
+    best_state: dict | None = None
+    best_epoch = 0
+    stale_epochs = 0
 
     started = time.monotonic()
     for epoch in range(1, args.epochs + 1):
@@ -154,8 +164,33 @@ def main() -> None:
                     val_loss = -distribution.log_prob(act_val).mean().item()
                     predicted = distribution.get_actions(deterministic=True)
                     accuracy = float((predicted == act_val).float().mean().item())
+                    per_dim = (predicted == act_val).float().mean(dim=0).tolist()
                 message += f", 验证损失 {val_loss:.4f}, 单维准确率 {accuracy:.3f}"
+                message += " [" + " ".join(
+                    f"{label}:{value:.2f}" for label, value in zip(ACTION_LABELS, per_dim, strict=False)
+                ) + "]"
             LOGGER.info(message)
+
+        # 按验证损失留最好的那一版权重: 示范数据通常只有几千条, 训练久了会过拟合.
+        if obs_val is not None and len(obs_val):
+            with torch.no_grad():
+                distribution = policy.get_distribution(obs_val)
+                current_loss = float(-distribution.log_prob(act_val).mean().item())
+
+            if current_loss < best_loss - 1e-4:
+                best_loss = current_loss
+                best_epoch = epoch
+                best_state = {key: value.detach().clone() for key, value in policy.state_dict().items()}
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if args.patience > 0 and stale_epochs >= args.patience:
+                    LOGGER.info("验证损失连续 %d 轮没有改善, 提前停在第 %d 轮", stale_epochs, epoch)
+                    break
+
+    if best_state is not None:
+        policy.load_state_dict(best_state)
+        LOGGER.info("已回滚到验证损失最低的第 %d 轮 (验证损失 %.4f)", best_epoch, best_loss)
 
     model.save(str(output_dir / "bc.zip"))
     save_normalizer(output_dir / "vecnormalize.pkl", observations.shape[1], obs_mean, obs_var, len(normalized))

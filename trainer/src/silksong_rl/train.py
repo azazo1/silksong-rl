@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import time
@@ -30,12 +31,13 @@ LOGGER = logging.getLogger("silksong_rl.train")
 
 
 class ProgressCallback(BaseCallback):
-    """按固定步数间隔输出训练进度: 速度, 回合数, 平均回报, 胜负与伤害统计."""
+    """按固定步数间隔输出训练进度, 并把每个回合的结果追加到 episodes.jsonl."""
 
-    def __init__(self, log_interval: int = 2000, window: int = 20) -> None:
+    def __init__(self, log_interval: int = 2000, window: int = 20, episode_log: Path | None = None) -> None:
         super().__init__()
         self.log_interval = log_interval
         self.window = window
+        self.episode_log = episode_log
         self._started = time.monotonic()
         self._last_report_step = 0
         self._last_report_time = self._started
@@ -69,6 +71,8 @@ class ProgressCallback(BaseCallback):
                 self._losses += 1
             else:
                 self._timeouts += 1
+
+            self._append_episode_log(episode)
 
         if self.num_timesteps - self._last_report_step < self.log_interval:
             return True
@@ -114,6 +118,30 @@ class ProgressCallback(BaseCallback):
 
         return True
 
+    def _append_episode_log(self, episode: dict) -> None:
+        """每个回合追加一行 JSON, 便于训练结束后做离线分析."""
+
+        if self.episode_log is None:
+            return
+
+        record = {
+            "step": int(self.num_timesteps),
+            "episode": self._episodes,
+            "reward": float(episode.get("r", 0.0)),
+            "length": int(episode.get("l", 0)),
+            "damage_dealt": float(episode.get("damage_dealt", 0.0)),
+            "damage_taken": float(episode.get("damage_taken", 0.0)),
+            "boss_kills": float(episode.get("boss_kills", 0.0)),
+            "player_deaths": float(episode.get("player_deaths", 0.0)),
+            "reset_seconds": float(episode.get("reset_seconds", 0.0)),
+        }
+
+        try:
+            with self.episode_log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            LOGGER.warning("写 episodes.jsonl 失败: %s", exc)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="丝之歌 Boss 强化学习训练")
@@ -124,6 +152,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs-dir", default="runs", help="输出目录")
     parser.add_argument("--resume", default=None, help="从 checkpoint 继续训练 (.zip)")
     parser.add_argument("--vecnormalize", default=None, help="继续训练时载入的 VecNormalize 统计文件")
+    parser.add_argument(
+        "--finetune",
+        action="store_true",
+        help="从行为克隆模型微调时的保守超参 (更小学习率 + KL 约束), 避免一下子把模仿出来的策略冲掉",
+    )
 
     parser.add_argument("--speed", type=float, default=4.0, help="游戏内时间倍率, 只影响采集速度")
     parser.add_argument("--n-steps", type=int, default=1024, help="PPO 每次采样的步数")
@@ -131,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="学习率")
     parser.add_argument("--gamma", type=float, default=0.99, help="折扣因子")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="熵系数")
+    parser.add_argument("--target-kl", type=float, default=None, help="KL 早停阈值, 不设则不启用")
     parser.add_argument("--net-arch", default="256,256", help="策略网络层宽, 例如 256,256")
 
     parser.add_argument("--damage-dealt", type=float, default=1.0, help="每点对 Boss 伤害的奖励")
@@ -195,6 +229,17 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
 
     net_arch = [int(width) for width in args.net_arch.split(",") if width.strip()]
 
+    learning_rate = args.learning_rate
+    ent_coef = args.ent_coef
+    target_kl = args.target_kl
+    if args.finetune:
+        # 从人类示范克隆出来的策略是个"能用"的起点, 一上来用大学习率会把它冲掉,
+        # 这里给一套保守值: 小学习率, 小熵, 并限制每次更新的 KL.
+        learning_rate = 1e-4 if args.learning_rate == 3e-4 else args.learning_rate
+        ent_coef = 0.003 if args.ent_coef == 0.01 else args.ent_coef
+        target_kl = 0.03 if args.target_kl is None else args.target_kl
+        LOGGER.info("微调模式: 学习率 %s, 熵系数 %s, KL 上限 %s", learning_rate, ent_coef, target_kl)
+
     if args.resume:
         LOGGER.info("从 %s 继续训练", args.resume)
         model = PPO.load(args.resume, env=vec_env, tensorboard_log=str(run_dir / "tb"))
@@ -212,16 +257,22 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             vec_env,
             n_steps=args.n_steps,
             batch_size=args.batch_size,
-            learning_rate=args.learning_rate,
+            learning_rate=learning_rate,
             gamma=args.gamma,
-            ent_coef=args.ent_coef,
+            ent_coef=ent_coef,
+            target_kl=target_kl,
             policy_kwargs={"net_arch": net_arch},
             tensorboard_log=str(run_dir / "tb"),
             seed=args.seed,
             verbose=0,
         )
 
-    callbacks = [ProgressCallback(log_interval=args.log_interval)]
+    callbacks = [
+        ProgressCallback(
+            log_interval=args.log_interval,
+            episode_log=run_dir / "episodes.jsonl",
+        )
+    ]
     if args.checkpoint_every > 0:
         callbacks.append(
             CheckpointCallback(

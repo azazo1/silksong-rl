@@ -118,6 +118,19 @@ namespace RLEnv.Diagnostics
                 _plugin.Settings.Port.Value,
                 _plugin.Server != null && _plugin.Server.HasClient ? "已连接" : "未连接",
                 _plugin.Settings.OverlayKey.Value), _style);
+
+            if (_plugin.Boxes != null && _plugin.Boxes.Enabled)
+            {
+                GUILayout.Label(string.Format(
+                    "观测线框 {0} 个矩形 (青=主角 品红=Boss 绿=小怪 红=生效危险框 黄=未生效 蓝=场地), 快捷键 {1}",
+                    _plugin.Boxes.BoxCount,
+                    _plugin.Settings.BoxesKey.Value), _style);
+            }
+            else
+            {
+                GUILayout.Label(string.Format("观测线框已关闭, 快捷键 {0}", _plugin.Settings.BoxesKey.Value), _style);
+            }
+
             GUILayout.EndArea();
         }
 

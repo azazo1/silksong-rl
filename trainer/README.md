@@ -54,16 +54,26 @@ uv run silksong-record --episodes 5 --out records/moss-mother
 ### 2. 行为克隆
 
 ```shell
-uv run silksong-bc --data records/moss-mother --epochs 30
+uv run silksong-bc --data records/moss-mother --epochs 200
 ```
 
 产物是标准的 stable-baselines3 PPO 模型 `runs/bc/bc.zip`, 可以直接评估, 也可以接着做强化学习.
 
+示范数据通常只有几千条, 训久了会过拟合, 因此克隆默认带权重衰减并按验证损失早停 (会回滚到
+验证损失最低的那一版权重), 日志里按维度报准确率, 例如
+`单维准确率 0.931 [左右:0.92 上下:0.98 跳跃:0.93 攻击:0.84 缚丝:0.99]`.
+
 ### 3. PPO 微调
 
 ```shell
-uv run silksong-train --resume runs/bc/bc.zip --timesteps 200000 --speed 6
+uv run silksong-train --resume runs/bc/bc.zip --finetune --timesteps 200000 --speed 6
 ```
+
+`--finetune` 会用保守的超参 (学习率 1e-4, 熵系数 0.003, KL 上限 0.03): 行为克隆出来的策略
+是个能用的起点, 一上来用默认学习率容易把它冲掉, 变成"重新随机探索".
+
+训练产物里除了模型与归一化统计, 还有 `episodes.jsonl`: 每个回合一行, 记录步数, 回报, 长度,
+造成/受到伤害, 击杀与阵亡, 便于训练结束后离线分析.
 
 ## 训练
 

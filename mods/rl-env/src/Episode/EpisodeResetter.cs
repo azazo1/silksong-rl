@@ -91,6 +91,10 @@ namespace RLEnv.Episode
 
         private float _lastStableLog;
 
+        private float _phaseStartedAt;
+
+        private float _resetStartedAt;
+
         private int _stableFrames;
 
         // 等游戏自身死亡/复活/切场景流程结束的最长时间.
@@ -99,6 +103,12 @@ namespace RLEnv.Episode
         // 稳定状态需要连续保持多少帧才开始重置: 主角"刚复活"的那一瞬间各项标志位可能已经干净,
         // 但游戏的复活流程还在跑, 这时候插进去重载场景会把双方都卡住.
         private const int StableFramesRequired = 40;
+
+        // 就绪后先空转几帧再开始破门/进场, 让场景 Awake/Start 与读档落定.
+        private const int SceneSettleFrames = 3;
+
+        // 破门处理完再空转几帧才把主角摆进竞技场.
+        private const int ArenaEntryFrames = 6;
 
         private string DescribeGameState()
         {
@@ -220,7 +230,8 @@ namespace RLEnv.Episode
             _pendingBossName = bossName;
             _pendingStart = true;
             _stableFrames = 0;
-            _stableDeadline = Time.realtimeSinceStartup + StabilizeTimeoutSeconds;
+            _resetStartedAt = Time.realtimeSinceStartup;
+            _stableDeadline = _resetStartedAt + StabilizeTimeoutSeconds;
 
             SetStatus(ResetPhase.Stabilizing, "等待游戏进入稳定状态");
             TryStartPreparation();
@@ -677,7 +688,8 @@ namespace RLEnv.Episode
 
             if (!_blockersBroken)
             {
-                if (_bossWaitFrames < 10)
+                // 先空转几帧让场景的 Awake/Start 与持久化项读档落定, 再动手.
+                if (_bossWaitFrames < SceneSettleFrames)
                 {
                     _bossWaitFrames++;
                     return;
@@ -702,7 +714,7 @@ namespace RLEnv.Episode
             // 第二步: 把主角送进竞技场触发框. 清单里的落点是门口, 停在那里战斗不会触发.
             if (!_movedIntoArena)
             {
-                if (_bossWaitFrames < 20)
+                if (_bossWaitFrames < ArenaEntryFrames)
                 {
                     _bossWaitFrames++;
                     return;
@@ -837,13 +849,22 @@ namespace RLEnv.Episode
         private void SetStatus(ResetPhase phase, string message)
         {
             bool changed = _phase != phase;
-            _phase = phase;
-            _status = message;
+            float now = Time.realtimeSinceStartup;
             if (changed)
             {
-                _lastStableLog = Time.realtimeSinceStartup;
+                // 每个阶段耗时都打进日志: 重置是训练吞吐的主要开销, 优化要靠这些数字.
+                if (_phase != ResetPhase.Idle)
+                {
+                    _log.LogInfo(string.Format("重置阶段 {0} 用时 {1:F2} 秒", _phase, now - _phaseStartedAt));
+                }
+
+                _phaseStartedAt = now;
+                _lastStableLog = now;
                 _log.LogInfo("重置阶段: " + phase + " (" + message + ")");
             }
+
+            _phase = phase;
+            _status = message;
 
             if (_statusSink != null)
             {
@@ -868,7 +889,10 @@ namespace RLEnv.Episode
             SaveLevelStatePatch.Suppress = false;
             _phase = success ? ResetPhase.Done : ResetPhase.Failed;
             _status = message;
-            _log.Log(success ? LogLevel.Info : LogLevel.Warning, "重置结束: " + message);
+            _log.Log(success ? LogLevel.Info : LogLevel.Warning, string.Format(
+                "重置结束: {0} (总耗时 {1:F2} 秒)",
+                message,
+                Time.realtimeSinceStartup - _resetStartedAt));
 
             Action<bool, string> callback = _callback;
             _callback = null;

@@ -43,6 +43,11 @@ namespace RLEnv.Observation
 
         internal ArenaBounds Arena { get; private set; }
 
+        // 调试用: 打开后每步把"观测里用到的世界空间矩形"记下来, 供屏幕上的线框渲染.
+        internal bool CollectDebugBoxes { get; set; }
+
+        internal List<Diagnostics.ObservationBox> DebugBoxes { get; private set; } = new List<Diagnostics.ObservationBox>(32);
+
         internal void CaptureArena()
         {
             Arena = ArenaBounds.Capture();
@@ -51,6 +56,21 @@ namespace RLEnv.Observation
         internal void RescanHazards()
         {
             _hazards.Rescan();
+        }
+
+        // 只为了屏幕线框而跑一遍采集 (观测缓冲会一并被刷新, 但发送都发生在真正的 Collect 之后,
+        // 两者不会交错, 所以不会发错数据).
+        internal void CollectDebugView()
+        {
+            if (!CollectDebugBoxes)
+            {
+                return;
+            }
+
+            CollectPlayer(HeroController.instance, PlayerData.instance);
+            CollectEnemies();
+            CollectHazards(HeroController.instance);
+            AppendDebugBoxes();
         }
 
         internal void Collect(int episodeStep)
@@ -76,6 +96,74 @@ namespace RLEnv.Observation
 
             CollectEnemies();
             CollectHazards(hero);
+            AppendDebugBoxes();
+        }
+
+        // 把这一帧观测到的矩形 (主角, Boss, 小怪, 危险框, 场地) 收集起来给线框渲染用.
+        private void AppendDebugBoxes()
+        {
+            if (!CollectDebugBoxes)
+            {
+                return;
+            }
+
+            DebugBoxes.Clear();
+
+            HeroController hero = HeroController.instance;
+            if (hero != null)
+            {
+                Bounds bounds = hero.Bounds;
+                AddDebugBox(bounds.center, bounds.size, new Color(0f, 1f, 1f, 0.9f));
+            }
+
+            HealthManager boss = _bosses.Primary;
+            if (boss != null)
+            {
+                Bounds bounds;
+                if (TryGetBounds(boss.gameObject, out bounds))
+                {
+                    AddDebugBox(bounds.center, bounds.size, new Color(1f, 0f, 1f, 0.9f));
+                }
+            }
+
+            for (int i = 0; i < _enemySlots.Count && i < ObservationSchema.MaxEnemies; i++)
+            {
+                HealthManager manager = _enemySlots[i].Manager;
+                Bounds bounds;
+                if (manager != null && TryGetBounds(manager.gameObject, out bounds))
+                {
+                    AddDebugBox(bounds.center, bounds.size, new Color(0.2f, 1f, 0.2f, 0.9f));
+                }
+            }
+
+            for (int i = 0; i < _hazardSlots.Count && i < ObservationSchema.MaxHazards; i++)
+            {
+                HazardCandidate candidate = _hazardSlots[i];
+                if (candidate.Collider == null)
+                {
+                    continue;
+                }
+
+                Bounds bounds = candidate.Collider.bounds;
+                bool enabled = candidate.Collider.enabled && candidate.Hazard != null && candidate.Hazard.enabled;
+                Vector3 center = candidate.Collider.enabled ? bounds.center : candidate.Hazard.transform.position;
+                Vector2 size = candidate.Collider.enabled ? new Vector2(bounds.size.x, bounds.size.y) : new Vector2(0.6f, 0.6f);
+                AddDebugBox(center, size, enabled ? new Color(1f, 0.2f, 0.2f, 0.9f) : new Color(1f, 0.8f, 0.2f, 0.7f));
+            }
+
+            AddDebugBox(
+                new Vector2(Arena.CenterX, Arena.CenterY),
+                new Vector2(Arena.HalfWidth * 2f, Arena.HalfHeight * 2f),
+                new Color(0.4f, 0.6f, 1f, 0.8f));
+        }
+
+        private void AddDebugBox(Vector3 center, Vector2 size, Color color)
+        {
+            Diagnostics.ObservationBox box;
+            box.Center = new Vector2(center.x, center.y);
+            box.Size = size;
+            box.Color = color;
+            DebugBoxes.Add(box);
         }
 
         private void CollectPlayer(HeroController hero, PlayerData playerData)
@@ -354,13 +442,13 @@ namespace RLEnv.Observation
                     continue;
                 }
 
-                Bounds bounds = collider.bounds;
-                if (bounds.size.x <= 0.001f && bounds.size.y <= 0.001f)
-                {
-                    continue;
-                }
+                // 未激活的判定体 bounds 尺寸是 0, 位置也未必准, 用物体位置兜底:
+                // 这类条目照样上报 (enabled=0), 让智能体能提前看到"这边有攻击判定体".
+                Vector3 center = collider.enabled
+                    ? collider.bounds.center
+                    : hazard.transform.position;
 
-                float distance = DistanceSquared(bounds.center);
+                float distance = DistanceSquared(center);
                 // 只保留主角附近的, 免得远处没关系的判定体把名额占满.
                 if (distance > HazardKeepRadiusSquared)
                 {
@@ -383,11 +471,12 @@ namespace RLEnv.Observation
                 HazardCandidate candidate = _hazardSlots[slot];
                 Bounds bounds = candidate.Collider.bounds;
                 bool enabled = candidate.Collider.enabled && candidate.Hazard.enabled;
+                Vector3 center = candidate.Collider.enabled ? bounds.center : candidate.Hazard.transform.position;
 
                 _buffer[ObservationSchema.HazardField(slot, HazardObsField.Valid)] = 1f;
                 _buffer[ObservationSchema.HazardField(slot, HazardObsField.Enabled)] = enabled ? 1f : 0f;
-                _buffer[ObservationSchema.HazardField(slot, HazardObsField.RelXN)] = Arena.NormalizeX(bounds.center.x) - _buffer[(int)ObsField.PlayerPosXN];
-                _buffer[ObservationSchema.HazardField(slot, HazardObsField.RelYN)] = Arena.NormalizeY(bounds.center.y) - _buffer[(int)ObsField.PlayerPosYN];
+                _buffer[ObservationSchema.HazardField(slot, HazardObsField.RelXN)] = Arena.NormalizeX(center.x) - _buffer[(int)ObsField.PlayerPosXN];
+                _buffer[ObservationSchema.HazardField(slot, HazardObsField.RelYN)] = Arena.NormalizeY(center.y) - _buffer[(int)ObsField.PlayerPosYN];
                 _buffer[ObservationSchema.HazardField(slot, HazardObsField.HalfWidth)] = bounds.extents.x;
                 _buffer[ObservationSchema.HazardField(slot, HazardObsField.HalfHeight)] = bounds.extents.y;
                 _buffer[ObservationSchema.HazardField(slot, HazardObsField.DistanceN)] = Mathf.Sqrt(candidate.DistanceSquared) / Mathf.Max(1f, Arena.HalfWidth);

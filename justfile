@@ -39,6 +39,11 @@ train *args:
 eval model *args:
     cd trainer && uv run silksong-train --eval --model {{model}} {{args}}
 
+# 行为克隆并直接用 PPO 微调: just bootstrap records/moss-mother-v2
+bootstrap data *args:
+    cd trainer && uv run silksong-bc --data {{data}} {{args}}
+    cd trainer && uv run silksong-train --resume runs/bc/bc.zip --timesteps 200000 --speed 6
+
 # 查看训练曲线
 tensorboard:
     cd trainer && uv run tensorboard --logdir runs
