@@ -6,3 +6,10 @@
 /mods/*/bin/
 /mods/*.zip
 SilksongPath.props
+
+# Python 训练侧
+/trainer/.venv/
+/trainer/runs/
+__pycache__/
+*.pyc
+.pytest_cache/
