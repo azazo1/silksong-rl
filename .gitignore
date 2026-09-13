@@ -3,3 +3,5 @@
 /disassembly/*
 !/disassembly/decompile.ps1
 !/disassembly/README.md
+/mods/*/bin/
+/mods/*.zip

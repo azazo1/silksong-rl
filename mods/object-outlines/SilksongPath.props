@@ -1,0 +1,7 @@
+# mods/object-outlines/SilksongPath.props
+# 本机游戏目录, 只供本机构建使用, 不要提交到版本库.
+<Project>
+  <PropertyGroup>
+    <GameDir>D:\games\steam\common\Hollow Knight Silksong</GameDir>
+  </PropertyGroup>
+</Project>
