@@ -1,11 +1,15 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Text;
 using UnityEngine;
 
 namespace SilksongRL.ObjectOutlines
 {
     // 扫描场景并把描边对象分类.
-    // 低频扫描只决定"描哪些对象", 几何顶点每帧按对象的当前变换重算, 这样边框能跟住移动的对象.
+    // 扫描每轮只做一次全场景遍历 (拿全部 Collider2D, 再从碰撞体往上找它属于哪个标记对象),
+    // 否则每种标记组件各来一次 FindObjectsByType 会把帧时间拖出肉眼可见的卡顿.
+    // 几何顶点每帧按对象的当前变换重算, 所以边框能跟住移动的对象.
     internal sealed class OutlineScanner
     {
         private static readonly OutlineCategory[] AllCategories =
@@ -18,21 +22,29 @@ namespace SilksongRL.ObjectOutlines
         };
 
         private static readonly Collider2D[] EmptyColliders = new Collider2D[0];
-        private static readonly Renderer[] EmptyRenderers = new Renderer[0];
+
+        private static Type[] _breakableTypes;
+
+        private sealed class Group
+        {
+            public OutlineCategory Category;
+            public readonly List<Collider2D> Colliders = new List<Collider2D>(4);
+        }
 
         private sealed class OutlineTarget
         {
             public OutlineCategory Category;
+            public GameObject GameObject;
             public Collider2D[] Colliders;
-            public Renderer[] Renderers;
         }
 
         private readonly Dictionary<OutlineCategory, List<Vector3>> _vertices = new Dictionary<OutlineCategory, List<Vector3>>();
         private readonly Dictionary<OutlineCategory, int> _counts = new Dictionary<OutlineCategory, int>();
         private readonly List<OutlineTarget> _targets = new List<OutlineTarget>(1024);
-        private readonly HashSet<GameObject> _candidates = new HashSet<GameObject>();
-        private readonly List<Collider2D> _colliderBuffer = new List<Collider2D>(64);
-        private readonly List<Renderer> _rendererBuffer = new List<Renderer>(16);
+        private readonly Dictionary<GameObject, Group> _groups = new Dictionary<GameObject, Group>(1024);
+        private readonly Dictionary<Transform, GameObject> _ownerLookup = new Dictionary<Transform, GameObject>(4096);
+        private readonly Dictionary<GameObject, OutlineCategory> _ownerCategories = new Dictionary<GameObject, OutlineCategory>(1024);
+        private readonly HashSet<GameObject> _classified = new HashSet<GameObject>();
         private readonly StringBuilder _builder = new StringBuilder(256);
 
         public long LastScanMilliseconds { get; private set; }
@@ -52,6 +64,21 @@ namespace SilksongRL.ObjectOutlines
             }
 
             CandidateSummary = string.Empty;
+        }
+
+        // 可破坏物 (藤蔓, 可破坏墙, 罐子之类) 各挂各的组件, 没有共同基类,
+        // 所以按类名前缀把这一族都找出来, 运行时用 GetComponent(Type) 判断.
+        private static Type[] BreakableTypes
+        {
+            get
+            {
+                if (_breakableTypes == null)
+                {
+                    _breakableTypes = ResolveBreakableTypes();
+                }
+
+                return _breakableTypes;
+            }
         }
 
         public List<Vector3> Vertices(OutlineCategory category)
@@ -79,47 +106,77 @@ namespace SilksongRL.ObjectOutlines
             return _builder.ToString();
         }
 
-        // 低频调用: 决定这一轮描哪些对象, 并把它们的碰撞体缓存下来.
+        // 低频调用: 决定这一轮描哪些对象.
         public void Scan(int maxObjectsPerCategory)
         {
             System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
 
             _targets.Clear();
+            _groups.Clear();
+            _ownerLookup.Clear();
+            _ownerCategories.Clear();
+            _classified.Clear();
             for (int i = 0; i < AllCategories.Length; i++)
             {
                 _counts[AllCategories[i]] = 0;
             }
 
-            CollectCandidates();
+            Collider2D[] colliders = UnityEngine.Object.FindObjectsByType<Collider2D>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+            int unmatched = 0;
 
-            foreach (GameObject candidate in _candidates)
+            for (int i = 0; i < colliders.Length; i++)
             {
-                if (candidate == null)
+                Collider2D collider = colliders[i];
+                if (collider == null)
                 {
                     continue;
                 }
 
+                GameObject owner;
                 OutlineCategory category;
-                if (!TryClassify(candidate, out category))
+                if (!ResolveOwner(collider.transform, out owner, out category))
                 {
+                    unmatched++;
                     continue;
                 }
 
-                if (_counts[category] >= maxObjectsPerCategory)
+                Group group;
+                if (!_groups.TryGetValue(owner, out group))
                 {
-                    continue;
+                    if (_counts[category] >= maxObjectsPerCategory)
+                    {
+                        continue;
+                    }
+
+                    group = new Group();
+                    group.Category = category;
+                    _groups[owner] = group;
+                    _classified.Add(owner);
+                    _counts[category] = _counts[category] + 1;
                 }
 
-                _counts[category] = _counts[category] + 1;
-                _targets.Add(CreateTarget(candidate, category));
+                group.Colliders.Add(collider);
             }
+
+            foreach (KeyValuePair<GameObject, Group> pair in _groups)
+            {
+                OutlineTarget target = new OutlineTarget();
+                target.GameObject = pair.Key;
+                target.Category = pair.Value.Category;
+                target.Colliders = pair.Value.Colliders.Count > 0 ? pair.Value.Colliders.ToArray() : EmptyColliders;
+                _targets.Add(target);
+            }
+
+            CandidateSummary = string.Format(
+                "扫描: 碰撞体={0} 已分类对象={1} 未匹配碰撞体={2}",
+                colliders.Length, _groups.Count, unmatched);
 
             watch.Stop();
             LastScanMilliseconds = watch.ElapsedMilliseconds;
         }
 
         // 每帧调用: 按对象当前变换生成线段顶点.
-        public void BuildGeometry(ICollection<OutlineCategory> enabledCategories, bool rendererFallback)
+        public void BuildGeometry(ICollection<OutlineCategory> enabledCategories)
         {
             System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
 
@@ -136,7 +193,7 @@ namespace SilksongRL.ObjectOutlines
                     continue;
                 }
 
-                AddTargetGeometry(target, _vertices[target.Category], rendererFallback);
+                AddTargetGeometry(target, _vertices[target.Category]);
             }
 
             TotalVertices = 0;
@@ -149,33 +206,129 @@ namespace SilksongRL.ObjectOutlines
             LastGeometryMilliseconds = watch.ElapsedMilliseconds;
         }
 
-        private OutlineTarget CreateTarget(GameObject candidate, OutlineCategory category)
+        // 排查用: 统计场景里"带碰撞体但没被描边"的对象都挂了哪些游戏脚本.
+        public int CollectUnclassifiedHistogram(Dictionary<string, int> counts, int maxObjects)
         {
-            OutlineTarget target = new OutlineTarget();
-            target.Category = category;
+            int examined = 0;
 
-            _colliderBuffer.Clear();
-            candidate.GetComponentsInChildren<Collider2D>(false, _colliderBuffer);
-            target.Colliders = _colliderBuffer.Count > 0 ? _colliderBuffer.ToArray() : EmptyColliders;
+            Collider2D[] colliders = UnityEngine.Object.FindObjectsByType<Collider2D>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+            HashSet<GameObject> seen = new HashSet<GameObject>();
 
-            if (target.Colliders.Length > 0)
+            for (int i = 0; i < colliders.Length && examined < maxObjects; i++)
             {
-                target.Renderers = EmptyRenderers;
-            }
-            else
-            {
-                _rendererBuffer.Clear();
-                candidate.GetComponentsInChildren<Renderer>(false, _rendererBuffer);
-                target.Renderers = _rendererBuffer.Count > 0 ? _rendererBuffer.ToArray() : EmptyRenderers;
+                Collider2D collider = colliders[i];
+                if (collider == null)
+                {
+                    continue;
+                }
+
+                GameObject target = collider.gameObject;
+                if (_classified.Contains(target) || !seen.Add(target))
+                {
+                    continue;
+                }
+
+                examined++;
+
+                Component[] components = target.GetComponents<Component>();
+                for (int c = 0; c < components.Length; c++)
+                {
+                    Component component = components[c];
+                    if (component == null)
+                    {
+                        continue;
+                    }
+
+                    Type type = component.GetType();
+                    string ns = type.Namespace;
+                    if (!string.IsNullOrEmpty(ns) && ns.StartsWith("UnityEngine", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    int value;
+                    counts.TryGetValue(type.Name, out value);
+                    counts[type.Name] = value + 1;
+                }
             }
 
-            return target;
+            return examined;
         }
 
-        private static void AddTargetGeometry(OutlineTarget target, List<Vector3> vertices, bool rendererFallback)
+        private static Type[] ResolveBreakableTypes()
         {
-            bool hasCollider = false;
+            List<Type> found = new List<Type>();
 
+            try
+            {
+                Assembly assembly = typeof(HeroController).Assembly;
+                foreach (Type type in assembly.GetTypes())
+                {
+                    if (!typeof(MonoBehaviour).IsAssignableFrom(type))
+                    {
+                        continue;
+                    }
+
+                    string name = type.Name;
+                    if (name.StartsWith("Breakable", StringComparison.Ordinal)
+                        || name.StartsWith("Destructible", StringComparison.Ordinal))
+                    {
+                        found.Add(type);
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("[ObjectOutlines] 解析可破坏物类型失败: " + exception.Message);
+            }
+
+            return found.ToArray();
+        }
+
+        // 从碰撞体往上找它属于哪个标记对象; 同一个 Transform 的结果在一轮扫描内复用.
+        private bool ResolveOwner(Transform start, out GameObject owner, out OutlineCategory category)
+        {
+            GameObject cached;
+            if (_ownerLookup.TryGetValue(start, out cached))
+            {
+                owner = cached;
+                if (owner == null)
+                {
+                    category = OutlineCategory.Player;
+                    return false;
+                }
+
+                category = _ownerCategories[owner];
+                return true;
+            }
+
+            Transform current = start;
+            int guard = 0;
+
+            while (current != null && guard < 8)
+            {
+                OutlineCategory found;
+                if (TryClassify(current.gameObject, out found))
+                {
+                    _ownerLookup[start] = current.gameObject;
+                    _ownerCategories[current.gameObject] = found;
+                    owner = current.gameObject;
+                    category = found;
+                    return true;
+                }
+
+                current = current.parent;
+                guard++;
+            }
+
+            _ownerLookup[start] = null;
+            owner = null;
+            category = OutlineCategory.Player;
+            return false;
+        }
+
+        private static void AddTargetGeometry(OutlineTarget target, List<Vector3> vertices)
+        {
             Collider2D[] colliders = target.Colliders;
             for (int i = 0; i < colliders.Length; i++)
             {
@@ -186,59 +339,10 @@ namespace SilksongRL.ObjectOutlines
                 }
 
                 ColliderOutlineBuilder.AddCollider(collider, vertices);
-                hasCollider = true;
             }
-
-            if (hasCollider || !rendererFallback)
-            {
-                return;
-            }
-
-            Renderer[] renderers = target.Renderers;
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Renderer renderer = renderers[i];
-                if (renderer == null || !renderer.enabled || renderer is ParticleSystemRenderer)
-                {
-                    continue;
-                }
-
-                ColliderOutlineBuilder.AddBounds(renderer.bounds, vertices);
-            }
-        }
-
-        private void CollectCandidates()
-        {
-            _candidates.Clear();
-
-            int heroes = AddAll(UnityEngine.Object.FindObjectsByType<HeroController>(FindObjectsInactive.Exclude, FindObjectsSortMode.None));
-            int healths = AddAll(UnityEngine.Object.FindObjectsByType<HealthManager>(FindObjectsInactive.Exclude, FindObjectsSortMode.None));
-            int interactables = AddAll(UnityEngine.Object.FindObjectsByType<InteractableBase>(FindObjectsInactive.Exclude, FindObjectsSortMode.None));
-            int pickups = AddAll(UnityEngine.Object.FindObjectsByType<CollectableItemPickup>(FindObjectsInactive.Exclude, FindObjectsSortMode.None));
-            int damageHeroes = AddAll(UnityEngine.Object.FindObjectsByType<DamageHero>(FindObjectsInactive.Exclude, FindObjectsSortMode.None));
-            int hazards = AddAll(UnityEngine.Object.FindObjectsByType<HazardRespawnTrigger>(FindObjectsInactive.Exclude, FindObjectsSortMode.None));
-
-            CandidateSummary = string.Format(
-                "候选 hero={0} health={1} interact={2} pickup={3} damageHero={4} hazard={5}",
-                heroes, healths, interactables, pickups, damageHeroes, hazards);
-        }
-
-        private int AddAll<T>(T[] components) where T : Component
-        {
-            for (int i = 0; i < components.Length; i++)
-            {
-                T component = components[i];
-                if (component != null)
-                {
-                    _candidates.Add(component.gameObject);
-                }
-            }
-
-            return components.Length;
         }
 
         // 判定对象所属类别; 不属于任何类别的返回 false.
-        // 挂在敌人子节点上的伤害判定会被所属实体覆盖, 因此这里直接跳过.
         private static bool TryClassify(GameObject target, out OutlineCategory category)
         {
             category = OutlineCategory.Player;
@@ -246,6 +350,34 @@ namespace SilksongRL.ObjectOutlines
             if (target.GetComponent<HeroController>() != null)
             {
                 category = OutlineCategory.Player;
+                return true;
+            }
+
+            Type[] breakableTypes = BreakableTypes;
+            for (int i = 0; i < breakableTypes.Length; i++)
+            {
+                Component component = target.GetComponent(breakableTypes[i]);
+                if (component == null)
+                {
+                    continue;
+                }
+
+                // 背景层的可破坏物副本会在 Start 里把自己禁用掉, 这些不算可打烂的目标.
+                Behaviour behaviour = component as Behaviour;
+                if (behaviour != null && !behaviour.enabled)
+                {
+                    continue;
+                }
+
+                category = OutlineCategory.Breakable;
+                return true;
+            }
+
+            // 有些可打烂的东西 (例如苔藓区的藤蔓门) 身上没有任何 Breakable 组件,
+            // 只挂一个把攻击转发给 PlayMaker 状态机的代理, 这类也算可破坏物.
+            if (target.GetComponent<ReceivedDamageProxy>() != null)
+            {
+                category = OutlineCategory.Breakable;
                 return true;
             }
 
@@ -262,7 +394,9 @@ namespace SilksongRL.ObjectOutlines
                 return true;
             }
 
-            if (target.GetComponent<DamageHero>() != null || target.GetComponent<HazardRespawnTrigger>() != null)
+            if (target.GetComponent<DamageHero>() != null
+                || target.GetComponent<HazardRespawnTrigger>() != null
+                || target.GetComponent<KillOnContact>() != null)
             {
                 if (HasHealthManagerAncestor(target.transform))
                 {

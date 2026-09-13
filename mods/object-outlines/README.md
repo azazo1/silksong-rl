@@ -31,9 +31,9 @@ Player=1  Enemy=23  Hazard=7  Interactable=9  Breakable=31  | 顶点=1832 几何
 | --- | --- | --- |
 | Player | 青色 | 对象上有 `HeroController` |
 | Enemy | 红色 | 对象上有 `HealthManager`, 且 `EnemyType` 属于 Regular / Shade / Armoured |
-| Hazard | 橙色 | 对象上有 `DamageHero` 或 `HazardRespawnTrigger`, 且不属于某个敌人实体 |
+| Hazard | 橙色 | 对象上有 `DamageHero`, `HazardRespawnTrigger` 或 `KillOnContact` (碰到即致死), 且不属于某个敌人实体 |
 | Interactable | 蓝色 | 对象上有 `InteractableBase` (含 NPC, 门, 场景过渡点) 或 `CollectableItemPickup` |
-| Breakable | 灰色 | 有 `HealthManager` 但不是敌人; 默认不绘制 |
+| Breakable | 灰色 | 挂了名字以 `Breakable` / `Destructible` 开头的组件 (藤蔓, 可破坏墙与柱, 可破坏道具, 被禁用的背景副本除外), 或者挂了 `ReceivedDamageProxy` (把攻击转发给 PlayMaker 状态机, 例如苔藓区的藤蔓门), 或者有 `HealthManager` 但不是敌人 |
 
 绘制范围是标记对象自身及其所有子对象的 `Collider2D` 轮廓; 没有任何碰撞体时退回到渲染器包围盒, 粒子系统的渲染器会被跳过.
 
@@ -50,11 +50,10 @@ Player=1  Enemy=23  Hazard=7  Interactable=9  Breakable=31  | 顶点=1832 几何
 | `General/ToggleKey` | `F9` | 开关快捷键 |
 | `General/RefreshIntervalSeconds` | `0.5` | 重新收集描边对象的间隔; 位置是每帧更新的, 这个值只影响目标增删的及时性 |
 | `General/MaxObjectsPerCategory` | `300` | 每个类别最多描边的对象数 |
-| `Draw/RendererFallback` | `true` | 没有碰撞体时用渲染器包围盒画框 |
 | `Draw/MeshRendering` | `true` | 用 Mesh 一次性提交; 关掉则退回逐顶点 GL 绘制 |
 | `Draw/ShowStatsOverlay` | `true` | 左上角显示统计信息 |
 | `Log/LogCounts` | `false` | 每次扫描把统计信息写入日志 |
-| `Categories/*` | 见上表 | 每个类别单独的开关 |
+| `Categories/*` | 全开 | 每个类别单独的开关 |
 | `Colors/*Color` | 见上表 | 颜色, 格式 `R,G,B,A` (0-255) |
 
 ## 构建
@@ -81,5 +80,6 @@ pwsh -File mods/object-outlines/build.ps1 -Install -GameDir 'game/Hollow Knight 
 - 只收集激活中的对象, 未激活对象不出现在边框里.
 - 每个类别默认上限 300 个对象, 场景里目标过多时超出的部分不画.
 - 线宽固定 1 像素, 这是线段绘制的限制.
+- 只描有 `Collider2D` 的对象: 扫描是"先拿全部碰撞体, 再从碰撞体往上找标记组件", 完全没有碰撞体的目标不会出框.
 - 复合碰撞体 (Tilemap / Composite) 用世界包围盒近似, 不是精确轮廓.
 - 对象集合是周期性重扫的, 所以刚生成或刚消失的目标最多滞后 `RefreshIntervalSeconds` 才反映到边框上.

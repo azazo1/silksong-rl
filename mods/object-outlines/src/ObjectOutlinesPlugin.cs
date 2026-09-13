@@ -10,7 +10,7 @@ namespace SilksongRL.ObjectOutlines
     {
         public const string PluginGuid = "silksongrl.object-outlines";
         public const string PluginName = "Silksong Object Outlines";
-        public const string PluginVersion = "0.2.0";
+        public const string PluginVersion = "0.4.0";
 
         private static readonly OutlineCategory[] Categories =
         {
@@ -32,10 +32,11 @@ namespace SilksongRL.ObjectOutlines
         private ConfigEntry<KeyboardShortcut> _toggleKey;
         private ConfigEntry<float> _refreshInterval;
         private ConfigEntry<int> _maxObjectsPerCategory;
-        private ConfigEntry<bool> _rendererFallback;
         private ConfigEntry<bool> _useMesh;
         private ConfigEntry<bool> _logCounts;
         private ConfigEntry<bool> _showStats;
+        private ConfigEntry<KeyboardShortcut> _probeKey;
+        private ConfigEntry<float> _probeRadius;
 
         private bool _shortcutUnavailable;
         private bool _warnedMissingRenderCallback;
@@ -71,7 +72,7 @@ namespace SilksongRL.ObjectOutlines
 
             // 几何每帧按对象当前变换重算, 边框才跟得住移动的对象;
             // 对象集合本身由低频扫描决定.
-            _scanner.BuildGeometry(_activeCategories, _rendererFallback.Value);
+            _scanner.BuildGeometry(_activeCategories);
             _drawer.Rebuild(_scanner, _activeCategories, _colors);
 
             if (_useMesh.Value)
@@ -133,6 +134,11 @@ namespace SilksongRL.ObjectOutlines
                     _enabled.Value = !_enabled.Value;
                     Logger.LogInfo("边框显示已" + (_enabled.Value ? "开启" : "关闭"));
                 }
+
+                if (_probeKey.Value.IsDown())
+                {
+                    SceneProbe.Dump(Logger, _scanner, _probeRadius.Value);
+                }
             }
             catch (System.Exception exception)
             {
@@ -170,16 +176,22 @@ namespace SilksongRL.ObjectOutlines
                 "MaxObjectsPerCategory",
                 300,
                 new ConfigDescription("每个类别最多描边的对象数", new AcceptableValueRange<int>(1, 5000)));
-            _rendererFallback = Config.Bind("Draw", "RendererFallback", true, "对象没有碰撞体时, 退而用渲染器包围盒画框");
             _useMesh = Config.Bind("Draw", "MeshRendering", true, "用 Mesh 一次性提交绘制 (推荐); 关掉则退回逐顶点 GL 绘制");
             _showStats = Config.Bind("Draw", "ShowStatsOverlay", true, "在屏幕左上角显示统计信息");
             _logCounts = Config.Bind("Log", "LogCounts", false, "每次扫描后把统计信息写入日志");
+            _probeKey = Config.Bind("Log", "ProbeKey", new KeyboardShortcut(KeyCode.F10), "按一下把周围对象的组件与未分类组件统计写进日志");
+            _probeRadius = Config.Bind(
+                "Log",
+                "ProbeRadius",
+                12f,
+                new ConfigDescription("探针统计周围对象的半径", new AcceptableValueRange<float>(1f, 60f)));
 
             for (int i = 0; i < Categories.Length; i++)
             {
                 OutlineCategory category = Categories[i];
                 string name = category.ToString();
-                bool defaultEnabled = category != OutlineCategory.Breakable;
+                // 可破坏物默认也画: 藤蔓门这类东西玩家会盯着看, 关掉反而不方便.
+                const bool defaultEnabled = true;
 
                 _categoryEnabled[category] = Config.Bind(
                     "Categories",
