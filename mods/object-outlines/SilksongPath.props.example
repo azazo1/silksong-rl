@@ -1,5 +1,6 @@
 # mods/object-outlines/SilksongPath.props
-# 复制本文件为 SilksongPath.props, 并把 GameDir 改成本机游戏目录.
+# 复制本文件为 SilksongPath.props, 再把 GameDir 改成本机游戏目录.
+# 绝对路径与相对路径都支持, 相对路径的基准是本文件所在目录.
 <Project>
   <PropertyGroup>
     <GameDir>C:\Program Files (x86)\Steam\steamapps\common\Hollow Knight Silksong</GameDir>

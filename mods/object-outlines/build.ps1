@@ -27,11 +27,22 @@ function Write-Step {
     Write-Host "[object-outlines] $Message"
 }
 
+function Resolve-RelativePath {
+    param([string]$Path)
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    # 相对路径按本 mod 目录解析, 与 MSBuild 导入 SilksongPath.props 时的基准保持一致.
+    return [System.IO.Path]::GetFullPath((Join-Path $root $Path))
+}
+
 function Resolve-GameDir {
     param([string]$Explicit)
 
     if ($Explicit) {
-        return $Explicit
+        return (Resolve-RelativePath $Explicit)
     }
 
     $propsPath = Join-Path $root 'SilksongPath.props'
@@ -39,7 +50,7 @@ function Resolve-GameDir {
         $content = Get-Content -LiteralPath $propsPath -Raw
         $match = [regex]::Match($content, '<GameDir>\s*([^<]+?)\s*</GameDir>')
         if ($match.Success) {
-            return $match.Groups[1].Value
+            return (Resolve-RelativePath $match.Groups[1].Value)
         }
     }
 
