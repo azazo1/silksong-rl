@@ -22,11 +22,16 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from . import protocol
 from .dataset import load_demonstrations
 
 LOGGER = logging.getLogger("silksong_rl.bc")
+
+# 观测里既有世界坐标 (几十), 也有比例 (0 到 1), 必须归一化后网络才学得动.
+# 这里用的裁剪范围与 stable-baselines3 的 VecNormalize 默认值一致.
+CLIP_OBS = 10.0
 
 
 class SpecEnv(gym.Env):
@@ -73,15 +78,22 @@ def main() -> None:
     observations, actions = load_demonstrations(args.data)
     LOGGER.info("载入示范 %d 条, 观测 %d 维, 动作 %d 维", len(observations), observations.shape[1], actions.shape[1])
 
+    # 用示范数据本身的均值方差做观测归一化, 并把统计量随模型一起存下来,
+    # 这样 PPO 微调时用同一份 VecNormalize, 网络看到的输入分布是一致的.
+    obs_mean = observations.mean(axis=0)
+    obs_var = observations.var(axis=0)
+    obs_std = np.sqrt(np.maximum(obs_var, 1e-8))
+    normalized = np.clip((observations - obs_mean) / obs_std, -CLIP_OBS, CLIP_OBS).astype(np.float32)
+
     generator = np.random.default_rng(args.seed)
-    indices = generator.permutation(len(observations))
+    indices = generator.permutation(len(normalized))
     val_count = int(len(indices) * args.val_ratio)
     val_indices = indices[:val_count]
     train_indices = indices[val_count:]
 
-    obs_train = torch.as_tensor(observations[train_indices], dtype=torch.float32)
+    obs_train = torch.as_tensor(normalized[train_indices], dtype=torch.float32)
     act_train = torch.as_tensor(actions[train_indices], dtype=torch.long)
-    obs_val = torch.as_tensor(observations[val_indices], dtype=torch.float32) if val_count else None
+    obs_val = torch.as_tensor(normalized[val_indices], dtype=torch.float32) if val_count else None
     act_val = torch.as_tensor(actions[val_indices], dtype=torch.long) if val_count else None
 
     net_arch = [int(width) for width in args.net_arch.split(",") if width.strip()]
@@ -97,15 +109,24 @@ def main() -> None:
 
     policy = model.policy
     policy.train()
+    device = policy.device
+    LOGGER.info("训练设备: %s", device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.learning_rate)
     batch_size = max(1, min(args.batch_size, len(obs_train)))
+
+    # 网络在 cuda 上时, 数据也要跟过去.
+    obs_train = obs_train.to(device)
+    act_train = act_train.to(device)
+    if obs_val is not None:
+        obs_val = obs_val.to(device)
+        act_val = act_val.to(device)
 
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
     for epoch in range(1, args.epochs + 1):
-        permutation = torch.randperm(len(obs_train))
+        permutation = torch.randperm(len(obs_train), device=device)
         total_loss = 0.0
         batches = 0
         for start in range(0, len(obs_train), batch_size):
@@ -137,9 +158,25 @@ def main() -> None:
             LOGGER.info(message)
 
     model.save(str(output_dir / "bc.zip"))
+    save_normalizer(output_dir / "vecnormalize.pkl", observations.shape[1], obs_mean, obs_var, len(normalized))
+
     LOGGER.info("行为克隆完成, 用时 %.1f 分钟", (time.monotonic() - started) / 60.0)
     LOGGER.info("模型已保存: %s", (output_dir / "bc.zip").resolve())
+    LOGGER.info("归一化统计已保存: %s", (output_dir / "vecnormalize.pkl").resolve())
     LOGGER.info("下一步: uv run silksong-train --resume %s --timesteps 200000", output_dir / "bc.zip")
+
+
+def save_normalizer(path: Path, obs_dim: int, mean: np.ndarray, var: np.ndarray, count: int) -> None:
+    """存一份与训练侧完全一致的 VecNormalize 统计, 供 PPO 微调时继续使用."""
+
+    spec_env = SpecEnv(obs_dim, tuple(int(x) for x in protocol.ACTION_SHAPE))
+    vec_env = DummyVecEnv([lambda: spec_env])
+    normalizer = VecNormalize(vec_env, norm_obs=True, norm_reward=False, clip_obs=CLIP_OBS)
+    normalizer.obs_rms.mean = np.asarray(mean, dtype=np.float64)
+    normalizer.obs_rms.var = np.asarray(var, dtype=np.float64)
+    normalizer.obs_rms.count = float(count)
+    normalizer.save(str(path))
+    vec_env.close()
 
 
 if __name__ == "__main__":

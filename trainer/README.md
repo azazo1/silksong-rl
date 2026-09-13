@@ -36,6 +36,35 @@ uv run silksong-smoke --steps 30 --policy scripted
 它会连上插件, 重置一个回合, 然后按固定动作序列 (右移 / 跳跃 / 攻击) 跑若干步,
 每步打印关键观测与奖励, 用来肉眼确认动作真的注入了、观测真的在变、每步耗时是多少.
 
+## 推荐流程: 先录示范, 再做强化学习
+
+从零开始靠随机探索打赢 Boss 非常慢, 因此先录几局自己的操作做行为克隆, 再用 PPO 微调.
+
+### 1. 录制人类示范
+
+游戏开好, 插件装好, 确保没有别的训练进程连着, 然后:
+
+```shell
+uv run silksong-record --episodes 5 --out records/moss-mother
+```
+
+脚本会自己把 Boss 房准备好并交给你操作: 死了或打赢了都会自动开下一局, 每局存一个
+`episode-NNN.npz`. 录制期间不注入任何输入, 游戏按常速运行.
+
+### 2. 行为克隆
+
+```shell
+uv run silksong-bc --data records/moss-mother --epochs 30
+```
+
+产物是标准的 stable-baselines3 PPO 模型 `runs/bc/bc.zip`, 可以直接评估, 也可以接着做强化学习.
+
+### 3. PPO 微调
+
+```shell
+uv run silksong-train --resume runs/bc/bc.zip --timesteps 200000 --speed 6
+```
+
 ## 训练
 
 ```shell
@@ -82,7 +111,7 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 
 ## 动作空间
 
-`MultiDiscrete([3, 3, 2, 2])`, 含义是 `[左右, 上下, 跳跃, 攻击]`:
+`MultiDiscrete([3, 3, 2, 2, 2])`, 含义是 `[左右, 上下, 跳跃, 攻击, 缚丝]`:
 
 | 维度 | 取值 |
 | --- | --- |
@@ -90,6 +119,7 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 | 上下 | 0 不动, 1 上, 2 下 |
 | 跳跃 | 0 松开, 1 按住 |
 | 攻击 | 0 松开, 1 按住 |
+| 缚丝 | 0 松开, 1 按住 (满丝时缚丝回 3 点血) |
 
 一个 step 内按键保持按住, 与真人握手柄一致. 攻击方向由"上下"与主角朝向决定
 (上劈 / 前劈 / 下劈). 跳跃松开会把上升速度砍半, 所以想跳高就得按住.

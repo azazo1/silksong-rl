@@ -59,6 +59,61 @@ namespace RLEnv.Observation
             return false;
         }
 
+        internal int BossCount
+        {
+            get { return _bosses.Count; }
+        }
+
+        // 某个敌人的血量上限估计: 记录过的用记录值, 第一次见到就把当前血量当上限.
+        internal bool TryGetMaxHealth(HealthManager manager, out int maxHealth)
+        {
+            maxHealth = 0;
+            if (manager == null)
+            {
+                return false;
+            }
+
+            int existing;
+            if (_maxHealth.TryGetValue(manager, out existing) && existing > 0)
+            {
+                maxHealth = existing;
+                return true;
+            }
+
+            maxHealth = Mathf.Max(1, manager.hp);
+            _maxHealth[manager] = maxHealth;
+            return true;
+        }
+
+        // 所有 Boss 本体的血量总和 / 上限总和, 供多阶段 Boss 用.
+        internal float TotalHealthRatio
+        {
+            get
+            {
+                float current = 0f;
+                float total = 0f;
+                for (int i = 0; i < _bosses.Count; i++)
+                {
+                    HealthManager manager = _bosses[i];
+                    if (manager == null)
+                    {
+                        continue;
+                    }
+
+                    int max;
+                    if (!_maxHealth.TryGetValue(manager, out max) || max <= 0)
+                    {
+                        continue;
+                    }
+
+                    current += Mathf.Max(0, manager.hp);
+                    total += max;
+                }
+
+                return total > 0f ? current / total : 0f;
+            }
+        }
+
         // 回合开始时调用: 重新解析并记录初始血量 (当作血量上限).
         internal void Resolve(bool force)
         {

@@ -1,81 +1,81 @@
+using System.Collections.Generic;
+using System.Text;
+
 namespace RLEnv.Observation
 {
-    // 观测向量的字段定义.
+    // 观测字段表: 名字与顺序就是协议里的顺序, Python 侧按名字取值, 不硬编码下标.
     //
-    // 顺序即协议顺序: mod 侧按这个顺序填 float, Python 侧按 Hello 消息里给出的同名列表解析.
-    // 归一化尽量放在 Python 侧做, 这里除了少量无量纲比值之外都发原始值, 方便改奖励塑形时不用重编 mod.
-    internal enum ObsField
-    {
-        PlayerPosXN,
-        PlayerPosYN,
-        PlayerVelX,
-        PlayerVelY,
-        PlayerFacing,
-        PlayerOnGround,
-        PlayerHealthRatio,
-        PlayerHealth,
-        PlayerSilk,
-        PlayerSilkRatio,
-        PlayerBinding,
-        PlayerInvulnerable,
-        PlayerAttacking,
-        PlayerRecoiling,
-        PlayerDead,
-        PlayerPosXWorld,
-        PlayerPosYWorld,
-
-        BossAlive,
-        BossRelXN,
-        BossRelYN,
-        BossVelX,
-        BossVelY,
-        BossFacing,
-        BossHealthRatio,
-        BossHealth,
-        BossHealthMax,
-        BossDistanceN,
-        BossStateId,
-        BossPosXWorld,
-        BossPosYWorld,
-
-        ArenaCenterX,
-        ArenaCenterY,
-        ArenaHalfWidth,
-        ArenaHalfHeight,
-
-        PhysicsFrame,
-        EpisodeStep,
-
-        DamageDealtStep,
-        DamageTakenStep,
-        BossKilledStep,
-        PlayerDiedStep,
-
-        Count
-    }
-
+    // 结构:
+    //   [固定段] 主角 / Boss / 场地 / 时间与事件
+    //   [重复段] 最近的 MaxEnemies 个小怪, 每个 EnemyStride 项
+    //   [重复段] 最近的 MaxHazards 个危险框, 每个 HazardStride 项
+    //   [重复段] 最近的 MaxBossFsms 个 Boss FSM 状态, 每个 BossFsmStride 项
     internal static class ObservationSchema
     {
-        // 与 ObsField 一一对应, 改动时两边一起改; Count 会做长度校验.
-        private static readonly string[] Names = new string[]
+        internal const int MaxEnemies = 6;
+
+        internal const int MaxHazards = 8;
+
+        internal const int MaxBossFsms = 4;
+
+        internal const string[] EnemyFieldNames = new string[]
+        {
+            "valid", "rel_x_n", "rel_y_n", "vel_x", "vel_y",
+            "health", "health_ratio", "half_w", "half_h", "facing", "enemy_type"
+        };
+
+        internal const string[] HazardFieldNames = new string[]
+        {
+            "valid", "rel_x_n", "rel_y_n", "half_w", "half_h", "distance_n", "damage", "hazard_type", "enabled"
+        };
+
+        internal const string[] BossFsmFieldNames = new string[]
+        {
+            "valid", "state_id"
+        };
+
+        private static readonly string[] FixedNames = new string[]
         {
             "player_pos_x_n",
             "player_pos_y_n",
+            "player_pos_x_world",
+            "player_pos_y_world",
             "player_vel_x",
             "player_vel_y",
             "player_facing",
             "player_on_ground",
-            "player_health_ratio",
+            "player_was_on_ground",
+            "player_jumping",
+            "player_double_jumping",
+            "player_falling",
+            "player_dashing",
+            "player_air_dashing",
+            "player_wall_sliding",
+            "player_wall_clinging",
+            "player_touching_wall",
+            "player_looking_up",
+            "player_looking_down",
+            "player_attacking",
+            "player_up_attacking",
+            "player_down_attacking",
+            "player_nail_charging",
+            "player_recoiling",
+            "player_invulnerable",
+            "player_binding",
+            "player_dead",
+            "player_hazard_death",
+            "player_transitioning",
+            "player_accepting_input",
+            "player_control_relinquished",
+            "player_hero_state",
             "player_health",
+            "player_health_ratio",
+            "player_health_max",
             "player_silk",
             "player_silk_ratio",
-            "player_binding",
-            "player_invulnerable",
-            "player_attacking",
-            "player_recoiling",
-            "player_dead",
-            "player_pos_x_world",
-            "player_pos_y_world",
+            "player_silk_max",
+            "player_half_w",
+            "player_half_h",
 
             "boss_alive",
             "boss_rel_x_n",
@@ -83,13 +83,18 @@ namespace RLEnv.Observation
             "boss_vel_x",
             "boss_vel_y",
             "boss_facing",
-            "boss_health_ratio",
             "boss_health",
+            "boss_health_ratio",
             "boss_health_max",
             "boss_distance_n",
             "boss_state_id",
+            "boss_health_total_ratio",
+            "boss_count",
+            "boss_invincible",
             "boss_pos_x_world",
             "boss_pos_y_world",
+            "boss_half_w",
+            "boss_half_h",
 
             "arena_center_x",
             "arena_center_y",
@@ -98,16 +103,31 @@ namespace RLEnv.Observation
 
             "physics_frame",
             "episode_step",
-
             "damage_dealt_step",
             "damage_taken_step",
             "boss_killed_step",
-            "player_died_step"
+            "player_died_step",
+            "enemy_count",
+            "hazard_count"
         };
+
+        private static readonly string[] Names = BuildNames();
+
+        internal static readonly int EnemyStride = EnemyFieldNames.Length;
+
+        internal static readonly int HazardStride = HazardFieldNames.Length;
+
+        internal static readonly int BossFsmStride = BossFsmFieldNames.Length;
+
+        internal static readonly int EnemyBase = FixedNames.Length;
+
+        internal static readonly int HazardBase = EnemyBase + MaxEnemies * EnemyStride;
+
+        internal static readonly int BossFsmBase = HazardBase + MaxHazards * HazardStride;
 
         internal static int FieldCount
         {
-            get { return (int)ObsField.Count; }
+            get { return Names.Length; }
         }
 
         internal static string[] FieldNames
@@ -115,20 +135,24 @@ namespace RLEnv.Observation
             get { return Names; }
         }
 
-        // 字段表写错时尽早发现, 免得 Python 侧解析时才发现对不上.
-        internal static string Validate()
+        internal static int EnemyField(int slot, EnemyObsField field)
         {
-            if (Names.Length != (int)ObsField.Count)
-            {
-                return string.Format("观测字段数量不匹配: 名称 {0} 个, 枚举 {1} 个", Names.Length, (int)ObsField.Count);
-            }
+            return EnemyBase + slot * EnemyStride + (int)field;
+        }
 
-            return null;
+        internal static int HazardField(int slot, HazardObsField field)
+        {
+            return HazardBase + slot * HazardStride + (int)field;
+        }
+
+        internal static int BossFsmField(int slot, BossFsmObsField field)
+        {
+            return BossFsmBase + slot * BossFsmStride + (int)field;
         }
 
         internal static string ToJson()
         {
-            System.Text.StringBuilder builder = new System.Text.StringBuilder(1024);
+            StringBuilder builder = new StringBuilder(Names.Length * 24);
             builder.Append('[');
             for (int i = 0; i < Names.Length; i++)
             {
@@ -142,6 +166,64 @@ namespace RLEnv.Observation
 
             builder.Append(']');
             return builder.ToString();
+        }
+
+        // 字段表与枚举写错时尽早报错, 免得 Python 侧解析时才发现对不上.
+        internal static string Validate()
+        {
+            if (FixedNames.Length != (int)ObsField.Count)
+            {
+                return string.Format("固定字段数量不匹配: 名称 {0} 个, 枚举 {1} 个", FixedNames.Length, (int)ObsField.Count);
+            }
+
+            if (EnemyFieldNames.Length != (int)EnemyObsField.Count)
+            {
+                return string.Format("敌人字段数量不匹配: 名称 {0} 个, 枚举 {1} 个", EnemyFieldNames.Length, (int)EnemyObsField.Count);
+            }
+
+            if (HazardFieldNames.Length != (int)HazardObsField.Count)
+            {
+                return string.Format("危险框字段数量不匹配: 名称 {0} 个, 枚举 {1} 个", HazardFieldNames.Length, (int)HazardObsField.Count);
+            }
+
+            if (BossFsmFieldNames.Length != (int)BossFsmObsField.Count)
+            {
+                return string.Format("Boss FSM 字段数量不匹配: 名称 {0} 个, 枚举 {1} 个", BossFsmFieldNames.Length, (int)BossFsmObsField.Count);
+            }
+
+            return null;
+        }
+
+        private static string[] BuildNames()
+        {
+            List<string> names = new List<string>(FixedNames.Length + MaxEnemies * EnemyFieldNames.Length + MaxHazards * HazardFieldNames.Length + MaxBossFsms * BossFsmFieldNames.Length);
+            names.AddRange(FixedNames);
+
+            for (int slot = 0; slot < MaxEnemies; slot++)
+            {
+                for (int i = 0; i < EnemyFieldNames.Length; i++)
+                {
+                    names.Add("enemy" + slot + "_" + EnemyFieldNames[i]);
+                }
+            }
+
+            for (int slot = 0; slot < MaxHazards; slot++)
+            {
+                for (int i = 0; i < HazardFieldNames.Length; i++)
+                {
+                    names.Add("hazard" + slot + "_" + HazardFieldNames[i]);
+                }
+            }
+
+            for (int slot = 0; slot < MaxBossFsms; slot++)
+            {
+                for (int i = 0; i < BossFsmFieldNames.Length; i++)
+                {
+                    names.Add("boss_fsm" + slot + "_" + BossFsmFieldNames[i]);
+                }
+            }
+
+            return names.ToArray();
         }
     }
 }

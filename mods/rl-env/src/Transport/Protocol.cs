@@ -14,8 +14,6 @@ namespace RLEnv.Transport
         // 单帧上限, 防止异常长度把内存吃爆.
         internal const int MaxPayloadBytes = 1 << 20;
 
-        internal const int ObservationFloats = 1;
-
         internal enum MessageType
         {
             // Python -> mod

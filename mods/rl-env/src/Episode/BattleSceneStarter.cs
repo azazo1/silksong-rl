@@ -36,35 +36,6 @@ namespace RLEnv.Episode
             return true;
         }
 
-        // 波次战开打后 BattleScene.currentEnemies 会被置成敌人数量, 因此它大于 0 就说明战斗已经启动.
-        // 场景里没有波次战时返回 true (例如 BossSceneController 式的 Boss 战不靠这个判断).
-        internal static bool AnyEngaged()
-        {
-            BattleScene[] scenes = FindScenes();
-            if (scenes.Length == 0)
-            {
-                return true;
-            }
-
-            bool hasWaveScene = false;
-            for (int i = 0; i < scenes.Length; i++)
-            {
-                BattleScene scene = scenes[i];
-                if (scene == null || scene.waves == null || scene.waves.Count == 0)
-                {
-                    continue;
-                }
-
-                hasWaveScene = true;
-                if (scene.currentEnemies > 0)
-                {
-                    return true;
-                }
-            }
-
-            return !hasWaveScene;
-        }
-
         internal static string Describe()
         {
             BattleScene[] scenes = FindScenes();

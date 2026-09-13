@@ -42,12 +42,14 @@ Python 训练进程                         游戏进程 (RLEnv 插件)
 
 ## 动作
 
-`MultiDiscrete([3, 3, 2, 2])` = `[左右, 上下, 跳跃, 攻击]`. 一个 step 内按键保持按住,
+`MultiDiscrete([3, 3, 2, 2, 2])` = `[左右, 上下, 跳跃, 攻击, 缚丝]`. 一个 step 内按键保持按住,
 与真人握手柄一致; 想让跳跃/攻击这类边沿动作再次触发, 必须让下一步把按键松开. 这样跳跃的
 可变高度 (松手把上升速度砍半) 与蓄力这类按住语义都保持原样.
 
 攻击方向由"上下"与主角朝向共同决定 (上劈 / 前劈 / 下劈), 与游戏输入层一致; 主角朝向由左右
 输入改变, 所以"朝哪边打"是左右加攻击的组合, 不需要单独的方向维度.
+
+"缚丝"对应游戏的 `Cast` 键, 满丝时按住可以回 3 点血, 是长局里唯一的回复手段.
 
 ## 步进时序
 
@@ -69,6 +71,47 @@ Python 训练进程                         游戏进程 (RLEnv 插件)
 存档数据 + 发起一次同场景重载". 具体步骤与坑见 `mods/rl-env/README.md` 的"工作方式"一节,
 其中最关键的是重置窗口内必须屏蔽 `GameManager.SaveLevelState()`, 否则旧场景的持久化项会把
 新数据写脏, 表现为新场景里 Boss 隐形且战斗不触发.
+
+以苔藓之母 (场景 `Tut_03`) 为例, 一回合的完整流程与实测耗时:
+
+| 阶段 | 做了什么 | 首次 | 后续回合 |
+| --- | --- | --- | --- |
+| 破门 | 主角被摆到 `Moss Vine Cluster` 门前, 反复挥针打烂两个藤蔓门 | 约 6 秒 (4 倍速下) | 跳过 |
+| 缓存 | 把"门已破"这一刻的 `SceneData` 存成 JSON | - | - |
+| 重载 | `SetLoadedGameData` + `ReadyForRespawn` 重载同场景 | 约 3 秒 | 约 3 秒 |
+| 进场 | 主角摆进竞技场 (触发框不可用时退化为站到 Boss 身前) | - | - |
+| 唤醒 | 给 Boss 发 `WAKE` 事件 | - | - |
+| 就绪 | 等 Boss 的 FSM 状态签名变化 + 空转几帧 | - | - |
+| 合计 | | **约 11 秒** | **约 4.4 秒** |
+
+几个只有实测才能发现的关键点:
+
+- **门口的两个藤蔓门不是 `Breakable`**: 它们挂着 `PersistentBoolItem + PlayMakerFSM +
+  PlayMakerTriggerEnter2D + ReceivedDamageProxy`, 破门逻辑写在 FSM 里. 与其去猜 FSM 事件名,
+  不如让主角真的走过去用针打烂, 走游戏自己的判定链路. 是否破掉用持久化项 `Moss Vine Cluster`
+  是否翻成 true 判断 (不能用"FSM 状态变了"判断, 打第一下就会换状态, 门其实还在).
+- **Boss 在 `Dormant` 状态等的是 `WAKE` 事件**, 不是 `BATTLE START`:
+  `Control` FSM 的 `Dormant` 状态里有 `WAKE->Start Battle` 这条转移, 触发条件与"主角是否在场地内"
+  有关. 所以顺序必须是"先破门 → 再进场地 → 再发 WAKE".
+- **主角死亡不能等游戏自己的死亡流程**: 原版是 `GameManager.PlayerDead` 协程里等 4 秒, 写盘,
+  预载场景, 然后复活切场景; 这套流程和我们的重置会同时发起场景切换, 结果卡在载入界面.
+  现在训练期间直接用 Harmony prefix 把 `PlayerDead` / `PlayerDeadFromHazard` 整个跳过,
+  主角就地躺下, 由随后的场景重载恢复.
+- **等 Python 决策时不能把时间倍率设成 0**, 否则游戏自己的协程全部停摆; 用 `IdleTimeScale`
+  (默认 0.0005) 让世界几乎不动但仍然活着.
+
+## 推荐流程: 先示范, 再强化
+
+从零开始的随机探索打不赢 Boss (苔藓之母 120 血, 主角只有 5 血), 所以流程是"先模仿人, 再自我提升":
+
+1. `uv run silksong-record --episodes 5 --out records/moss-mother`
+   插件把 Boss 房准备好后交给你操作, 期间把 (观测, 你的真实按键) 成对流给 Python 落盘.
+2. `uv run silksong-bc --data records/moss-mother`
+   行为克隆出一个 stable-baselines3 PPO 模型 (`runs/bc/bc.zip`).
+3. `uv run silksong-train --resume runs/bc/bc.zip --timesteps 200000 --speed 6`
+   在这个起点上做 PPO 微调.
+
+示范数据与训练用的是同一套观测字段, 同一套动作分档, 同一个步长, 因此可以直接监督训练.
 
 ## 奖励
 

@@ -57,10 +57,6 @@ namespace RLEnv.Session
 
         private bool _registered;
 
-        private bool _episodeTerminated;
-
-        private bool _episodeTruncated;
-
         private float _runtimeSpeed;
 
         private bool _humanMode;
@@ -123,13 +119,13 @@ namespace RLEnv.Session
             _speed.Apply(1f);
 
             _resetter.SpawnHoldFrames = 3f;
-            _resetter.ForceStartBattle = true;
             _resetter.SaveSlotIndex = _config.SaveSlotIndex.Value;
             _resetter.SettleFrames = _config.SettleFrames.Value;
             _resetter.AllowMinimalPath = _config.MinimalReset.Value;
             _resetter.SkipWakeUpAnimation = _config.SkipWakeUpAnimation.Value;
             _resetter.BlockerNamePatterns = _config.BlockerNamePatterns.Value;
             _resetter.BlockerSpeed = _config.BlockerSpeed.Value;
+            _resetter.DumpSceneOnReset = _config.DumpSceneOnReset.Value;
             _resetter.SetSpeed = delegate(float value)
             {
                 _speed.Apply(value);
@@ -163,6 +159,13 @@ namespace RLEnv.Session
                 SetPhase(Phase.WaitingClient, "训练侧已断开");
                 VirtualPad.Release(2);
                 _speed.Apply(1f);
+                _humanMode = false;
+
+                // 训练侧中途断开时把没跑完的重置收掉, 否则下一个连接会被"上一次重置还没结束"挡住.
+                if (_resetter.Busy)
+                {
+                    _resetter.Abort();
+                }
             }
 
             EnvCommand command;
@@ -280,8 +283,6 @@ namespace RLEnv.Session
             _speed.Apply(1f);
             _combat.ResetTotals();
             _stepIndex = 0;
-            _episodeTerminated = false;
-            _episodeTruncated = false;
             _recordFrames = 0;
             _recordStepIndex = 0;
             SetPhase(Phase.Resetting, "开始重置回合");
@@ -335,7 +336,6 @@ namespace RLEnv.Session
             _combat.Refresh();
             VirtualPad.Arm(action);
             _combat.BeginStep();
-            _collector.MarkStepStart();
             _framesRemaining = Math.Max(1, _config.StepFrames.Value);
             _speed.Apply(_runtimeSpeed);
             SetPhase(Phase.Stepping, "执行动作 " + action);
@@ -421,9 +421,6 @@ namespace RLEnv.Session
 
         private void CompleteStep(bool terminated, bool truncated)
         {
-            _episodeTerminated = terminated;
-            _episodeTruncated = truncated;
-
             VirtualPad.Release(2);
 
             // 回合因为死亡而结束时, 游戏自己还要跑死亡与复活流程. 这一步必须用正常速度,

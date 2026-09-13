@@ -109,7 +109,11 @@ namespace RLEnv.Config
                     "打烂挡门障碍物时用的时间倍率 (破门是纯体力活, 加速不影响正确性)",
                     new AcceptableValueRange<float>(1f, 20f)));
 
-            ReturnToMenuOnDeath = config.Bind("Episode", "ReturnToMenuOnDeath", false, "主角死亡后是否退回主菜单 (默认直接原地重开一回合)");
+            DumpSceneOnReset = config.Bind(
+                "Diagnostics",
+                "DumpSceneOnReset",
+                false,
+                "每次重置结束时把场景里的敌人, 波次战与持久化项写进日志 (排查用, 平时关掉)");
         }
 
         internal ConfigEntry<bool> Enabled { get; private set; }
@@ -152,7 +156,7 @@ namespace RLEnv.Config
 
         internal ConfigEntry<float> BlockerSpeed { get; private set; }
 
-        internal ConfigEntry<bool> ReturnToMenuOnDeath { get; private set; }
+        internal ConfigEntry<bool> DumpSceneOnReset { get; private set; }
 
         internal Vector3 SpawnPosition
         {

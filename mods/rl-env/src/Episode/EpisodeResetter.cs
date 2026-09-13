@@ -178,13 +178,13 @@ namespace RLEnv.Episode
 
         internal float SpawnHoldFrames { get; set; }
 
-        internal bool ForceStartBattle { get; set; }
-
         internal int SettleFrames { get; set; }
 
         internal bool AllowMinimalPath { get; set; }
 
         internal bool SkipWakeUpAnimation { get; set; }
+        // 排查用: 重置结束时把场景对象打进日志 (平时关掉, 否则日志会很吵).
+        internal bool DumpSceneOnReset { get; set; }
 
         // 需要在重置时程序化打烂的挡门障碍物名字片段 (逗号分隔).
         internal string BlockerNamePatterns { get; set; }
@@ -194,8 +194,6 @@ namespace RLEnv.Episode
 
         // 由会话注入的时间倍率设置入口.
         internal Action<float> SetSpeed { get; set; }
-
-        internal float LastResetSeconds { get; private set; }
 
         internal void Begin(string bossName, float timeoutSeconds, Action<bool, string> onFinished)
         {
@@ -779,7 +777,10 @@ namespace RLEnv.Episode
             if (_settleFrames >= Mathf.Max(1, SettleFrames))
             {
                 SaveLevelStatePatch.Suppress = false;
-                Diagnostics.SceneDiagnostics.Dump(_log, _bosses);
+                if (DumpSceneOnReset)
+                {
+                    Diagnostics.SceneDiagnostics.Dump(_log, _bosses);
+                }
                 Finish(true, string.Format(
                     "回合就绪 ({0} 个 Boss 目标, {1}, {2})",
                     _bosses.Bosses.Count,
@@ -811,7 +812,8 @@ namespace RLEnv.Episode
             }
         }
 
-        private void TryStartBattle(bool force)        {
+        private void TryStartBattle(bool force)
+        {
             if (_battleStartAttempted && !force)
             {
                 return;
@@ -866,7 +868,6 @@ namespace RLEnv.Episode
             SaveLevelStatePatch.Suppress = false;
             _phase = success ? ResetPhase.Done : ResetPhase.Failed;
             _status = message;
-            LastResetSeconds = Time.realtimeSinceStartup;
             _log.Log(success ? LogLevel.Info : LogLevel.Warning, "重置结束: " + message);
 
             Action<bool, string> callback = _callback;

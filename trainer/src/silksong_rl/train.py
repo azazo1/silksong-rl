@@ -198,10 +198,14 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
     if args.resume:
         LOGGER.info("从 %s 继续训练", args.resume)
         model = PPO.load(args.resume, env=vec_env, tensorboard_log=str(run_dir / "tb"))
-        if args.vecnormalize and Path(args.vecnormalize).exists():
-            vec_env = VecNormalize.load(args.vecnormalize, vec_env)
+        # 行为克隆产出的模型旁边会带一份归一化统计, 微调时必须沿用, 否则网络看到的输入分布不一致.
+        normalizer_path = Path(args.vecnormalize) if args.vecnormalize else Path(args.resume).parent / "vecnormalize.pkl"
+        if normalizer_path.exists():
+            vec_env = VecNormalize.load(str(normalizer_path), vec_env)
             model.set_env(vec_env)
-            LOGGER.info("已载入 VecNormalize 统计: %s", args.vecnormalize)
+            LOGGER.info("已载入观测归一化统计: %s", normalizer_path)
+        else:
+            LOGGER.warning("没有找到归一化统计 (%s), 将从头统计", normalizer_path)
     else:
         model = PPO(
             "MlpPolicy",

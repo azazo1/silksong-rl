@@ -23,6 +23,14 @@ selfcheck:
 smoke *args:
     cd trainer && uv run silksong-smoke {{args}}
 
+# 录制人类示范: just record --episodes 5 --out records/moss-mother
+record *args:
+    cd trainer && uv run silksong-record {{args}}
+
+# 用人类示范做行为克隆: just bc records/moss-mother
+bc data *args:
+    cd trainer && uv run silksong-bc --data {{data}} {{args}}
+
 # 开始训练: just train --timesteps 200000 --run-name moss-mother-a
 train *args:
     cd trainer && uv run silksong-train {{args}}

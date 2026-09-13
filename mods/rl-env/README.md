@@ -38,6 +38,7 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
 | `General/Enabled` | true | 总开关 |
+| `General/MuteAudio` | true | 训练时把游戏音量静音 (只改运行时音量) |
 | `General/Port` | 5555 | 训练侧连接端口, 只绑定回环地址 |
 | `General/BossName` | 苔藓之母 | 要训练的 Boss, 名字对应 `BossScenes/BossSave/<名字>.dat` |
 | `General/SceneName` | 空 | 该 Boss 所在场景, 留空时以清单里的为准 |
@@ -51,6 +52,8 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 | `Episode/SettleFrames` | 3 | Boss 出现后再空转多少渲染帧才算就绪 |
 | `Episode/MinimalReset` | true | 已在游戏内时用精简重置 (换数据 + `ReadyForRespawn`) |
 | `Episode/SkipWakeUpAnimation` | false | 跳过复活动画, 每回合省一点时间 |
+| `Episode/BlockerNamePatterns` | Moss Vine | 重置时程序化打烂的挡门障碍物名字片段 |
+| `Episode/BlockerSpeed` | 4 | 破门阶段的时间倍率 (破门是纯体力活, 加速安全) |
 | `UI/ShowOverlay` | true | 显示调试面板 |
 | `UI/OverlayKey` | F9 | 开关调试面板 |
 
@@ -77,8 +80,14 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
    && GameState == PLAYING && hero.isHeroInPosition`, 再等 Boss 的 `HealthManager` 激活并空转几帧;
 7. 必要时调用 `BattleScene.StartBattle()` 主动开战 (不依赖主角走进触发框).
 
-### 步进与采样
+### 人类示范录制
 
+训练侧发 `SetHumanMode(1)` 后, 插件不再注入任何输入, 游戏回到常速, 并且每 `StepFrames`
+个物理帧把"当前观测 + 玩家真实按下的键"作为 `Record` 消息发给训练侧. 于是示范样本与训练时
+的 MDP 定义完全一致 (同样的观测字段, 同样的动作分档, 同样的步长), 可以直接拿去做行为克隆.
+玩家死亡或 Boss 被击杀时照常发终止观测, 训练侧据此收尾一局.
+
+### 步进与采样
 - 一个 step: 按当前动作放开 `StepFrames` 个物理帧, 然后回到 `IdleTimeScale` 等下一步.
 - 不用 `Time.timeScale = 0` 暂停: 那会让 `FixedUpdate` 与游戏协程整体停摆. 改用极小非零倍率.
 - 时间倍率走游戏自带的 `TimeManager.TimeControlInstance`, 不直接写 `Time.timeScale`
@@ -97,14 +106,31 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 | Python -> mod | 3 `Close` | 关闭连接 |
 | Python -> mod | 4 `Ping` | 查询状态 |
 | Python -> mod | 5 `SetSpeed` | 改运行倍率 (float) |
+| Python -> mod | 6 `SetHumanMode` | 进入/退出人类示范录制 (int32: 1 开, 0 关) |
 | mod -> Python | 101 `Hello` | JSON: 协议版本, 观测字段表, 动作形状, 每步帧数 |
 | mod -> Python | 102 `Observation` | `[int32 stepIndex][int32 flags][float32 x N]` |
 | mod -> Python | 103 `Status` | JSON 状态 |
 | mod -> Python | 104 `Error` | JSON 错误 |
 | mod -> Python | 105 `StateMap` | JSON: Boss 状态 id 到 `FSM名=状态名` 的映射 |
+| mod -> Python | 106 `Record` | 人类示范样本: `[int32 stepIndex][float32 x N][int32 x 5]` |
 
 观测字段的权威定义在 `src/Observation/ObservationSchema.cs`, 训练侧从 `Hello` 里读名字,
 不硬编码下标. 训练侧的对应实现在 `trainer/src/silksong_rl/protocol.py`.
+
+## 排查
+
+训练侧连不上或行为不对时, 先看 `<游戏目录>/BepInEx/LogOutput.log`, 插件的关键阶段都会打日志.
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 连接超时 | 端口被占 (同一游戏实例同时只服务一个训练进程), 或者游戏还没启动到主循环; 训练侧默认会等 120 秒 |
+| `上一次重置还没结束` | 上一个训练进程断开时留下了没跑完的重置; 现在断开时会自动取消, 若仍出现说明是旧版本 |
+| Boss 一直是 `Dormant` | 门口的藤蔓门没破干净, 或者没发 `WAKE`; 看日志里有没有 `障碍物处理完成` 与 `已把主角送进竞技场` |
+| 卡在载入界面 | 重置撞上了游戏自己的死亡/复活流程; 确认 `PlayerDeathSuppressor` 已加载 (日志里没有它说明补丁没打上) |
+| 新回合里房间空无一人 | 场景持久化项被写脏了 (Boss 被 `SetActive(false)`); 检查 `SaveLevelStatePatch` 是否生效 |
+| 日志里噪声太多 | `Diagnostics/DumpSceneOnReset` 关掉 (默认就是关的) |
+
+想让插件把场景里有什么对象打出来, 把 `Diagnostics/DumpSceneOnReset` 设为 true 再重置一次即可.
 
 ## 目录
 
