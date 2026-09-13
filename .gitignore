@@ -1,3 +1,5 @@
 /.tmp
 /game/Hollow Knight Silksong
-/disassembly/
+/disassembly/*
+!/disassembly/decompile.ps1
+!/disassembly/README.md
