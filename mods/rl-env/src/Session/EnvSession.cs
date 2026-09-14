@@ -312,6 +312,12 @@ namespace RLEnv.Session
                 case Protocol.MessageType.SetHumanMode:
                     SetHumanMode(command.Flag);
                     break;
+                case Protocol.MessageType.SetStepping:
+                    ApplyStepping(command.StepFrames, command.MaxEpisodeSteps);
+                    break;
+                case Protocol.MessageType.SetClip:
+                    ApplyClip(command.ClipFps, command.ClipSeconds);
+                    break;
                 case Protocol.MessageType.SaveClip:
                     HandleSaveClip(command.Flag);
                     break;
@@ -322,6 +328,51 @@ namespace RLEnv.Session
                     BeginStep(command.Action);
                     break;
             }
+        }
+
+        // 决策粒度可以在训练中途改: 步长越小, 每个决策跨的游戏时间越短, 出手时机能卡得更准,
+        // 代价是一局要的步数按比例变多. 传 0 表示这一项保持原样.
+        private void ApplyStepping(int stepFrames, int maxEpisodeSteps)
+        {
+            if (stepFrames > 0)
+            {
+                _config.StepFrames.Value = Math.Max(1, Math.Min(200, stepFrames));
+            }
+
+            if (maxEpisodeSteps > 0)
+            {
+                _config.MaxEpisodeSteps.Value = Math.Max(10, Math.Min(100000, maxEpisodeSteps));
+            }
+
+            _log.LogInfo(
+                string.Format(
+                    "决策粒度已改为 {0} 物理帧/步 (约 {1:F3} 秒游戏时间), 单回合上限 {2} 步",
+                    _config.StepFrames.Value,
+                    _config.StepFrames.Value / 60f,
+                    _config.MaxEpisodeSteps.Value));
+        }
+
+        // 回放帧率与缓冲时长也能在训练中途改: 帧率越高回放越顺, 但每秒同步截屏的次数也越多
+        // (每次截屏都会等 GPU), 训练吞吐会掉一点. 传 0 表示这一项保持原样.
+        private void ApplyClip(int fps, int seconds)
+        {
+            if (fps > 0)
+            {
+                _config.ClipFps.Value = Math.Max(1, Math.Min(60, fps));
+            }
+
+            if (seconds > 0)
+            {
+                _config.ClipSeconds.Value = Math.Max(1, Math.Min(600, seconds));
+            }
+
+            _clips.Reconfigure(_config.ClipFps.Value, _config.ClipSeconds.Value);
+            _log.LogInfo(
+                string.Format(
+                    "回放录制已改为 {0} 帧/秒, 缓冲 {1} 秒 ({2} 帧)",
+                    _clips.Fps,
+                    _clips.CapacitySeconds,
+                    _clips.Fps * _clips.CapacitySeconds));
         }
 
         private void BeginReset()
@@ -556,6 +607,8 @@ namespace RLEnv.Session
             builder.Append(",\"action\":{\"horizontal\":3,\"vertical\":3,\"jump\":2,\"attack\":2,\"bind\":2}");
             builder.Append(",\"step_frames\":").Append(_config.StepFrames.Value);
             builder.Append(",\"max_episode_steps\":").Append(_config.MaxEpisodeSteps.Value);
+            builder.Append(",\"clip_fps\":").Append(_clips.Fps);
+            builder.Append(",\"clip_seconds\":").Append(_clips.CapacitySeconds);
             builder.Append(",\"boss\":\"").Append(_config.BossName.Value).Append('"');
             builder.Append(",\"scene\":\"").Append(_config.SceneName.Value).Append('"');
             builder.Append(",\"bosses\":[");

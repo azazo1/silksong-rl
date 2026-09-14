@@ -139,7 +139,7 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 
 ## 回合回放
 
-训练时插件按 `ClipFps` (默认 8) 把游戏画面编码成 JPEG 放在内存环形缓冲里, 只保留最近
+训练时插件按 `ClipFps` (默认 20) 把游戏画面编码成 JPEG 放在内存环形缓冲里, 只保留最近
 `ClipSeconds` 秒. 一局结束时训练侧发 `SaveClip`: 击杀就把缓冲写成 `clips/raw/<时间戳>/frame-NNNN.jpg`
 (再由训练侧用 ffmpeg 合成 mp4 并删掉原始帧), 没击杀就清掉, 所以长跑不会往磁盘堆垃圾.
 
@@ -147,7 +147,10 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 最前面的那个, 抓到的就是盖在它上面的窗口 (实测抓到过一整段静止的文档窗口). Unity 的
 `ScreenCapture` 读的是游戏自己的后备缓冲, 被遮挡也照样能抓.
 
-相关配置: `ClipEnabled` (总开关), `ClipFps`, `ClipSeconds`, `ClipQuality`.
+相关配置: `ClipEnabled` (总开关), `ClipFps`, `ClipSeconds`, `ClipQuality`; 训练侧可以用
+`SetClip` 消息 (对应 `--clip-fps` / `--clip-seconds`) 在运行时改前两项, 插件会把当前值写进 Hello,
+训练侧据此用同样的帧率合成 mp4. 实测抓帧从 8 帧/秒提到 30 帧/秒对步频几乎没有影响
+(15.5 → 15.9 毫秒/步).
 
 观测字段的权威定义在 `src/Observation/ObservationSchema.cs`, 训练侧从 `Hello` 里读名字,
 不硬编码下标. 训练侧的对应实现在 `trainer/src/silksong_rl/protocol.py`.

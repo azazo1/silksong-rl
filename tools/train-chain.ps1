@@ -12,6 +12,7 @@
 
     pwsh -File tools/train-chain.ps1 -Segments 5 -Timesteps 100000
     pwsh -File tools/train-chain.ps1 -Segments 5 -CloseReward 0.3
+    pwsh -File tools/train-chain.ps1 -Segments 5 -StepFrames 3 -MaxEpisodeSteps 1200
 
 日志: .tmp/train-chain.log (每段的起止), .tmp/train-<实验名>.log (每段的训练输出).
 #>
@@ -26,7 +27,14 @@ param(
     [int]$CheckpointEvery = 10000,
     [int]$GameBootSeconds = 45,
     [string]$CloseReward = '0',
-    [string]$CloseDistance = '0.3'
+    [string]$CloseDistance = '0.3',
+    [string]$WhiffPenalty = '0',
+    [int]$StepFrames = 0,
+    [int]$MaxEpisodeSteps = 0,
+    [int]$NSteps = 1024,
+    [string]$EntCoef = '0',
+    [int]$ClipFps = 0,
+    [int]$ClipSeconds = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,10 +95,34 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
 
     $started = Get-Date
     # 贴身奖励是可选塑形项, 只在显式给出时才透传给训练脚本.
-    $rewardArgs = @()
+    $extraArgs = @()
     if ($CloseReward -ne '0') {
-        $rewardArgs = @('--close-reward', $CloseReward, '--close-distance', $CloseDistance)
+        $extraArgs = @('--close-reward', $CloseReward, '--close-distance', $CloseDistance)
         Write-ChainLog "贴身奖励: $CloseReward / 步 (距离阈值 $CloseDistance)"
+    }
+    if ($WhiffPenalty -ne '0') {
+        $extraArgs += @('--whiff-penalty', $WhiffPenalty)
+        Write-ChainLog "挥空惩罚: $WhiffPenalty / 步"
+    }
+    if ($StepFrames -gt 0) {
+        $extraArgs += @('--step-frames', "$StepFrames")
+        Write-ChainLog "决策粒度: 每步 $StepFrames 物理帧"
+    }
+    if ($MaxEpisodeSteps -gt 0) {
+        $extraArgs += @('--max-episode-steps', "$MaxEpisodeSteps")
+        Write-ChainLog "单回合步数上限: $MaxEpisodeSteps"
+    }
+    if ($EntCoef -ne '0') {
+        $extraArgs += @('--ent-coef', $EntCoef)
+        Write-ChainLog "熵系数: $EntCoef"
+    }
+    if ($ClipFps -gt 0) {
+        $extraArgs += @('--clip-fps', "$ClipFps")
+        Write-ChainLog "回放帧率: $ClipFps"
+    }
+    if ($ClipSeconds -gt 0) {
+        $extraArgs += @('--clip-seconds', "$ClipSeconds")
+        Write-ChainLog "回放缓冲: $ClipSeconds 秒"
     }
     Push-Location $trainerDir
     try {
@@ -101,11 +133,11 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
             --timesteps $Timesteps `
             --run-name $runName `
             --speed $Speed `
-            --n-steps 1024 `
+            --n-steps $NSteps `
             --batch-size 256 `
             --log-interval $LogInterval `
             --checkpoint-every $CheckpointEvery `
-            @rewardArgs *>&1 |
+            @extraArgs *>&1 |
             Out-File -LiteralPath $segmentLog -Encoding utf8
     }
     finally {

@@ -36,6 +36,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--episodes", type=int, default=3, help="录几个回合")
     parser.add_argument("--out", default="records/demo", help="输出前缀, 每回合一个 .npz")
+    parser.add_argument(
+        "--step-frames",
+        type=int,
+        default=0,
+        help="录制采样间隔, 单位物理帧 (默认沿用插件配置的 6); 要和训练用的 --step-frames 一致",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -55,6 +61,8 @@ def main() -> None:
 
     client = EnvClient(host=args.host, port=args.port, connect_timeout=180.0, reset_timeout=180.0)
     client.connect()
+    # 示范的采样间隔必须和训练时的决策步长一致, 否则克隆出来的策略节奏会整体偏移.
+    client.set_stepping(args.step_frames)
 
     total_samples = 0
     for episode in range(1, args.episodes + 1):

@@ -10,6 +10,17 @@ from dataclasses import dataclass
 
 from .client import Observation
 
+# 够得着的判定: 用世界坐标算双方碰撞盒的边缘间距. 人类示范里命中几乎都发生在
+# dx < 3 且 dy < 3 的范围内, 超过这个范围挥刀是纯浪费 (还占着出刀冷却).
+REACH_DX = 3.5
+REACH_DY = 3.5
+
+# 密集奖励 (每步固定量) 的参照步长: 插件默认 6 个物理帧, 约 0.1 秒游戏时间.
+REFERENCE_STEP_FRAMES = 6.0
+
+# 折扣因子的换算参照: 不管一步跨多少游戏时间, "能看多远"都保持约 15 秒 (见 train.default_gamma).
+HORIZON_SECONDS = 15.0
+
 
 @dataclass
 class RewardConfig:
@@ -23,8 +34,12 @@ class RewardConfig:
     approach: float = 0.0
     close_reward: float = 0.0
     close_distance: float = 0.3
+    whiff_penalty: float = 0.0
     boss_hp_ratio_bonus: float = 0.0
     clip: float = 0.0
+    # 密集奖励按 "每 0.1 秒游戏时间" 折算: 换了决策粒度 (--step-frames) 之后,
+    # 每步固定量的奖励在每游戏秒里的总权重不会跟着变, 比较不同粒度才不会被搅混.
+    dense_scale: float = 1.0
 
     def describe(self) -> str:
         return (
@@ -32,8 +47,33 @@ class RewardConfig:
             f"击杀 {self.boss_kill:+.1f}, 阵亡 {self.player_death:+.1f}, "
             f"每步 {self.step_penalty:+.4f}, 接近 {self.approach:+.3f}, "
             f"贴身 {self.close_reward:+.3f}/步 (<{self.close_distance}), "
+            f"挥空 {self.whiff_penalty:+.3f}/步, "
             f"血量奖励 {self.boss_hp_ratio_bonus:+.2f}"
         )
+
+
+def out_of_reach(named: dict) -> bool:
+    """这一步的挥刀够不够得着 Boss (Boss 不在场时不算挥空)."""
+
+    if float(named.get("boss_alive", 0.0)) <= 0.5:
+        return False
+
+    needed = (
+        "player_pos_x_world",
+        "player_pos_y_world",
+        "boss_pos_x_world",
+        "boss_pos_y_world",
+        "player_half_w",
+        "player_half_h",
+        "boss_half_w",
+        "boss_half_h",
+    )
+    if any(name not in named for name in needed):
+        return False  # 观测里没有世界坐标就没法判, 宁可不算
+
+    dx = abs(named["player_pos_x_world"] - named["boss_pos_x_world"]) - (named["player_half_w"] + named["boss_half_w"])
+    dy = abs(named["player_pos_y_world"] - named["boss_pos_y_world"]) - (named["player_half_h"] + named["boss_half_h"])
+    return dx > REACH_DX or dy > REACH_DY
 
 
 def compute_reward(previous: Observation | None, current: Observation, config: RewardConfig) -> tuple[float, dict]:
@@ -50,9 +90,10 @@ def compute_reward(previous: Observation | None, current: Observation, config: R
         "damage_taken": config.damage_taken * damage_taken,
         "boss_kill": config.boss_kill * boss_killed,
         "player_death": config.player_death * player_died,
-        "step_penalty": config.step_penalty,
+        "step_penalty": config.step_penalty * config.dense_scale,
         "approach": 0.0,
         "close": 0.0,
+        "whiff": 0.0,
         "boss_hp_ratio": 0.0,
     }
 
@@ -67,7 +108,12 @@ def compute_reward(previous: Observation | None, current: Observation, config: R
         alive = float(named.get("boss_alive", 0.0))
         distance = float(named.get("boss_distance_n", 1.0))
         if alive > 0.5 and 0.0 <= distance < config.close_distance:
-            components["close"] = config.close_reward
+            components["close"] = config.close_reward * config.dense_scale
+
+    # 够不着还挥刀: 每刀都占着出刀冷却, 等 Boss 真进范围时反而没刀可出.
+    if config.whiff_penalty != 0.0:
+        if float(named.get("player_attacking", 0.0)) > 0.5 and out_of_reach(named):
+            components["whiff"] = config.whiff_penalty * config.dense_scale
 
     if config.boss_hp_ratio_bonus != 0.0:
         alive = float(named.get("boss_alive", 0.0))

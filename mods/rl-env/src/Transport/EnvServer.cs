@@ -20,6 +20,14 @@ namespace RLEnv.Transport
         internal float Speed;
 
         internal bool Flag;
+
+        internal int StepFrames;
+
+        internal int MaxEpisodeSteps;
+
+        internal int ClipFps;
+
+        internal int ClipSeconds;
     }
 
     // 训练侧的 TCP 服务端: 只监听本机回环地址, 同一时刻只服务一个客户端.
@@ -285,6 +293,26 @@ namespace RLEnv.Transport
 
                     command.Type = type;
                     command.Flag = BitConverter.ToInt32(payload, 4) != 0;
+                    return true;
+                case Protocol.MessageType.SetStepping:
+                    if (payload.Length < 12)
+                    {
+                        return false;
+                    }
+
+                    command.Type = type;
+                    command.StepFrames = BitConverter.ToInt32(payload, 4);
+                    command.MaxEpisodeSteps = BitConverter.ToInt32(payload, 8);
+                    return true;
+                case Protocol.MessageType.SetClip:
+                    if (payload.Length < 12)
+                    {
+                        return false;
+                    }
+
+                    command.Type = type;
+                    command.ClipFps = BitConverter.ToInt32(payload, 4);
+                    command.ClipSeconds = BitConverter.ToInt32(payload, 8);
                     return true;
                 default:
                     _log.LogWarning("未知消息类型: " + (int)type);

@@ -96,9 +96,17 @@ uv run silksong-train --timesteps 500000 --run-name moss-mother-a --speed 4
 uv run silksong-train --resume runs/moss-mother-a/final.zip \
   --vecnormalize runs/moss-mother-a/vecnormalize.pkl --timesteps 500000
 
+# 提高决策频率: 每个决策只推进 3 个物理帧 (默认 6), 单回合步数上限相应放大
+uv run silksong-train --step-frames 3 --max-episode-steps 1200
+
 # 训练时另开一个终端看曲线
 uv run tensorboard --logdir runs
 ```
+
+`--step-frames` / `--max-episode-steps` 走运行时协议 (插件侧 `SetStepping`), 不需要改游戏目录
+里的配置文件; 步长越小, 每个决策跨的游戏时间越短 (出手时机能卡得更准), 同样的墙钟时间能采到
+更多样本, 代价是一局的步数按比例变多. 录制示范时用同样的 `--step-frames`, 否则克隆出来的策略
+节奏会和训练时对不上.
 
 产物都落在 `runs/<实验名>/`: `final.zip` (模型), `checkpoints/` (周期存档),
 `vecnormalize.pkl` (观测归一化统计), `state_vocab.json` (Boss 状态词表), `tb/` (TensorBoard),
@@ -111,7 +119,15 @@ uv run tensorboard --logdir runs
 
 训练时插件会把最近若干秒的游戏画面滚动存在内存里 (其它窗口盖在上面也能抓到), 一局击杀才落盘,
 由训练侧用 ffmpeg 合成 `runs/<实验名>/kills/kill-NNN-HHMMSS.mp4` 并删掉原始帧; 没击杀就丢掉,
-所以长时间训练不会堆垃圾. 抓帧频率等参数在插件的 `ClipFps` / `ClipSeconds` 配置里.
+所以长时间训练不会堆垃圾.
+
+```shell
+# 回放帧率与缓冲时长 (不写就沿用插件配置; 帧率越高越顺, 实测对训练吞吐几乎没影响)
+uv run silksong-train --clip-fps 30 --clip-seconds 20
+```
+
+合成 mp4 时的帧率与插件抓帧的频率始终一致 (插件在 Hello 里上报自己的设置), 所以回放是按真实
+时间播放的, 不会忽快忽慢.
 
 随时看某个实验的分段趋势 (不连游戏, 训练进行中也能看):
 
@@ -128,6 +144,22 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 
 评估同样需要游戏在跑, 且插件处于等待 Reset 的状态.
 
+### 轨迹对比
+
+回合日志只说明"每局打了多少伤害", 要定位"刀为什么空"得看逐步轨迹. 评估时加
+`--save-episodes` 会把每个回合的 (观测, 动作) 按人类示范的格式落盘, 再用同一个工具
+把两边放在一起比:
+
+```shell
+uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 6 \
+    --stochastic --save-episodes .tmp/policy-traces
+uv run silksong-traces --dir records/moss-mother-v3 --against .tmp/policy-traces
+```
+
+输出包含命中步占比, 挥刀步占比, 每刀命中率, 各距离档位的站位占比, 命中时的距离分位,
+以及各维动作的取值分布; 训练侧的 `steps_within_*` / `hit_steps` / `act_*` 字段是同一批
+指标的逐回合版本 (见 `report.py` 的"站位"一行).
+
 ## 奖励
 
 奖励在 Python 侧算 (`reward.py`), 修改不需要重编插件. 默认各项:
@@ -140,6 +172,12 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 | `--player-death` | -25.0 | 自己阵亡 |
 | `--step-penalty` | -0.002 | 每个 step 的固定惩罚, 鼓励速战 |
 | `--approach` | 0.0 | 可选塑形: 靠近 Boss 的奖励系数 |
+| `--close-reward` | 0.0 | 可选塑形: 停在 `--close-distance` 以内的每步奖励 |
+| `--whiff-penalty` | 0.0 | 可选塑形: 够不着还出刀的每步惩罚 (用世界坐标判定) |
+
+`--step-penalty` / `--close-reward` / `--whiff-penalty` 是"每步固定量", 会按 `--step-frames`
+折算 (`dense_scale = 步长 / 6`), 换决策粒度时每游戏秒的权重不变; 事件型奖励 (伤害/击杀/阵亡)
+不受影响.
 
 伤害数值来自插件对 `HealthManager.Hit` 的 hp 前后差统计, 不是面板数值, 已经过游戏的
 伤害缩放与免疫判定.
@@ -193,4 +231,6 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 | `src/silksong_rl/dataset.py` | 示范数据的载入与归一化 |
 | `src/silksong_rl/bc.py` | 行为克隆 |
 | `src/silksong_rl/smoke.py` | 与游戏联调的冒烟测试 |
+| `src/silksong_rl/trace.py` | 评估回合的轨迹落盘 |
+| `src/silksong_rl/traces.py` | 示范与策略轨迹的同口径对比 |
 | `src/silksong_rl/selfcheck.py` | 不依赖游戏的自检 |

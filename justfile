@@ -60,6 +60,12 @@ report-all:
 report-compare:
     cd trainer && uv run silksong-report --compare
 
+# 对比示范与策略轨迹 (策略轨迹用 just eval <模型> --save-episodes .tmp/policy-traces 生成)
+# 用法: just traces trainer/records/moss-mother-v3
+#       just traces trainer/records/moss-mother-v3 .tmp/policy-traces
+traces dir against='':
+    cd trainer && uv run silksong-traces --dir {{dir}} {{ if against == '' { '' } else { '--against ' + against } }}
+
 # 查看训练曲线
 tensorboard:
     cd trainer && uv run tensorboard --logdir runs

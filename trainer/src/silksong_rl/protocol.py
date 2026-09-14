@@ -28,6 +28,12 @@ class MessageType(IntEnum):
     # 一局结束时告诉 mod 这局是不是击杀 (1 = 保存回放画面, 0 = 丢掉)
     SAVE_CLIP = 7
 
+    # 运行时调整决策粒度: 一个 step 几个物理帧 + 单回合步数上限 (0 表示不改这一项)
+    SET_STEPPING = 8
+
+    # 运行时调整回放录制: 帧率 + 缓冲秒数 (0 表示不改这一项)
+    SET_CLIP = 9
+
     # mod -> Python
     HELLO = 101
     OBSERVATION = 102
@@ -63,6 +69,20 @@ def encode_step(action) -> bytes:
     body = struct.pack("<iiiii", horizontal, vertical, jump, attack, bind)
     payload = _HEADER.pack(int(MessageType.STEP)) + body
     return _HEADER.pack(len(payload)) + payload
+
+
+def encode_set_stepping(step_frames: int = 0, max_episode_steps: int = 0) -> bytes:
+    """编码 SetStepping 消息: 两个 int32, 0 表示这一项保持原样."""
+
+    body = struct.pack("<iii", int(MessageType.SET_STEPPING), int(step_frames), int(max_episode_steps))
+    return _HEADER.pack(len(body)) + body
+
+
+def encode_set_clip(fps: int = 0, seconds: int = 0) -> bytes:
+    """编码 SetClip 消息: 两个 int32 (帧率, 缓冲秒数), 0 表示这一项保持原样."""
+
+    body = struct.pack("<iii", int(MessageType.SET_CLIP), int(fps), int(seconds))
+    return _HEADER.pack(len(body)) + body
 
 
 def encode_set_speed(speed: float) -> bytes:

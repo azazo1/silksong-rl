@@ -141,6 +141,24 @@ class EnvClient:
 
         self._send(protocol.encode_int_message(protocol.MessageType.SET_HUMAN_MODE, 1 if enabled else 0))
 
+    def set_stepping(self, step_frames: int = 0, max_episode_steps: int = 0) -> None:
+        """调整决策粒度: 一个 step 对应几个物理帧, 以及单回合步数上限 (0 = 不改)."""
+
+        if step_frames <= 0 and max_episode_steps <= 0:
+            return
+
+        self._send(protocol.encode_set_stepping(step_frames, max_episode_steps))
+        LOGGER.info("已请求决策粒度: 每步 %s 物理帧, 单回合上限 %s 步", step_frames or "不变", max_episode_steps or "不变")
+
+    def set_clip(self, fps: int = 0, seconds: int = 0) -> None:
+        """调整回放录制: 抓帧频率与内存缓冲时长 (0 = 不改)."""
+
+        if fps <= 0 and seconds <= 0:
+            return
+
+        self._send(protocol.encode_set_clip(fps, seconds))
+        LOGGER.info("已请求回放录制: %s 帧/秒, 缓冲 %s 秒", fps or "不变", seconds or "不变")
+
     def save_clip(self, save: bool, timeout: float = 5.0) -> str | None:
         """告诉 mod 这一局是不是击杀; 击杀时返回它落盘的画面目录, 否则返回 None.
 

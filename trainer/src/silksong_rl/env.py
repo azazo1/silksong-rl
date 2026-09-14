@@ -16,7 +16,7 @@ from gymnasium import spaces
 
 from .client import EnvClient, EnvProtocolError, Observation
 from .fields import build_mask
-from .reward import RewardConfig, compute_reward
+from .reward import REFERENCE_STEP_FRAMES, RewardConfig, compute_reward, out_of_reach
 from .state_ids import remap_states, state_columns
 
 LOGGER = logging.getLogger(__name__)
@@ -25,8 +25,25 @@ LOGGER = logging.getLogger(__name__)
 # (人在这段距离内的挥刀率最高), 用来统计"有多少步真的贴到了 Boss 身边".
 CLOSE_DISTANCE = 0.3
 
+# 插件旧版的回放抓帧频率 (新版会在 Hello 里上报, 训练侧也可以自己指定).
+DEFAULT_CLIP_FPS = 8
+
 # 站位诊断用的距离分档: 人类示范里 90% 的命中都发生在 0.5 以内, 只看 0.3 以内会漏掉大半.
 DISTANCE_BUCKETS = (0.2, 0.3, 0.4, 0.5)
+
+# 动作分布诊断: 人类示范里按住攻击只占 19.3%, 按住跳跃 23.5%, 下压 10.3%, 缚丝 0.8%.
+# 策略如果长期把某一维压在同一个值上, 这组计数一眼就能看出来.
+ACTION_TALLY_KEYS = (
+    "act_h0",
+    "act_h1",
+    "act_h2",
+    "act_v0",
+    "act_v1",
+    "act_v2",
+    "act_jump",
+    "act_attack",
+    "act_bind",
+)
 
 
 def bucket_key(threshold: float) -> str:
@@ -69,6 +86,12 @@ class SilksongBossEnv(gym.Env):
 
         self._last_reset_seconds = 0.0
 
+        # 一个决策步对应多少物理帧 (build_env 会按 --step-frames 覆盖), 用来按粒度折算超参.
+        self.step_frames = REFERENCE_STEP_FRAMES
+
+        # 回放抓帧频率 (build_env 会按 --clip-fps 覆盖), 合成 mp4 时要跟它对齐.
+        self.clip_fps = DEFAULT_CLIP_FPS
+
     # --- gym 接口 ---------------------------------------------------------
 
     def _configure_spaces(self) -> None:
@@ -98,6 +121,15 @@ class SilksongBossEnv(gym.Env):
                 len(self._state_vocabulary),
                 len(self._state_columns),
             )
+
+    @property
+    def latest_raw_values(self) -> np.ndarray | None:
+        """最近一次 reset/step 收到的原始观测 (未屏蔽, 未重映射状态编号).
+
+        轨迹记录要和人类示范同口径, 所以拿原始值而不是策略看到的那份.
+        """
+
+        return None if self._previous is None else self._previous.values
 
     def _postprocess(self, values: np.ndarray) -> np.ndarray:
         """清零被屏蔽的列 / 重映射状态编号, 返回给策略看的观测."""
@@ -139,11 +171,14 @@ class SilksongBossEnv(gym.Env):
             "close_steps": 0.0,
             "close_attack_steps": 0.0,
             "hit_steps": 0.0,
+            "whiff_steps": 0.0,
             "min_boss_distance": float("inf"),
             "clip_dir": "",
         }
         for threshold in DISTANCE_BUCKETS:
             self.episode_stats[bucket_key(threshold)] = 0.0
+        for key in ACTION_TALLY_KEYS:
+            self.episode_stats[key] = 0.0
 
         return self._postprocess(observation.values), self._build_info(observation)
 
@@ -218,6 +253,22 @@ class SilksongBossEnv(gym.Env):
 
         if float(named.get("damage_dealt_step", 0.0)) > 0.0:
             stats["hit_steps"] += 1.0
+
+        # 出刀了却够不着 (判定与奖励里的挥空惩罚同一套), 用来观察惩罚有没有把废刀压下去.
+        if float(named.get("player_attacking", 0.0)) > 0.5 and out_of_reach(named):
+            stats["whiff_steps"] += 1.0
+
+        if flat.size >= 5:
+            for index, value in ((0, int(flat[0])), (1, int(flat[1]))):
+                key = ("act_h" if index == 0 else "act_v") + str(value)
+                if key in stats:
+                    stats[key] += 1.0
+            if int(flat[2]) != 0:
+                stats["act_jump"] += 1.0
+            if int(flat[3]) != 0:
+                stats["act_attack"] += 1.0
+            if int(flat[4]) != 0:
+                stats["act_bind"] += 1.0
 
     def _finalize_stats(self) -> None:
         """回合结束时把区间量换算成便于比较的派生量."""

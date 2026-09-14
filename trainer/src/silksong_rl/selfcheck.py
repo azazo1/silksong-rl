@@ -119,6 +119,16 @@ def test_protocol_roundtrip() -> None:
     assert kind is protocol.MessageType.SET_SPEED, kind
     assert abs(struct.unpack("<f", body)[0] - 3.5) < 1e-6
 
+    stepping_frame = protocol.encode_set_stepping(3, 1200)
+    kind, body = protocol.decode_payload(stepping_frame[_LENGTH.size :])
+    assert kind is protocol.MessageType.SET_STEPPING, kind
+    assert struct.unpack("<ii", body) == (3, 1200), "决策粒度解码不对"
+
+    clip_frame = protocol.encode_set_clip(24, 20)
+    kind, body = protocol.decode_payload(clip_frame[_LENGTH.size :])
+    assert kind is protocol.MessageType.SET_CLIP, kind
+    assert struct.unpack("<ii", body) == (24, 20), "回放录制参数解码不对"
+
     LOGGER.info("协议编解码往返: 通过")
 
 
@@ -159,6 +169,39 @@ def test_reward() -> None:
     assert components["close"] == 0.0, components
     _, components = compute_reward(None, near, config)
     assert components["close"] == 0.0, components
+
+    # 挥空惩罚: 够不着还出刀才扣, 而且间距用世界坐标算 (归一化距离在这里不管用).
+    whiff_config = RewardConfig(whiff_penalty=-0.1)
+    reachable = observation(
+        boss_alive=1.0,
+        player_attacking=1.0,
+        player_pos_x_world=10.0,
+        boss_pos_x_world=13.0,
+        player_pos_y_world=5.0,
+        boss_pos_y_world=5.0,
+    )
+    _, components = compute_reward(None, reachable, whiff_config)
+    assert components["whiff"] == 0.0, components
+    too_far = observation(
+        boss_alive=1.0,
+        player_attacking=1.0,
+        player_pos_x_world=10.0,
+        boss_pos_x_world=30.0,
+        player_pos_y_world=5.0,
+        boss_pos_y_world=5.0,
+    )
+    _, components = compute_reward(None, too_far, whiff_config)
+    assert abs(components["whiff"] + 0.1) < 1e-9, components
+    idle = observation(boss_alive=1.0, player_pos_x_world=10.0, boss_pos_x_world=30.0)
+    _, components = compute_reward(None, idle, whiff_config)
+    assert components["whiff"] == 0.0, "没出刀不算挥空"
+
+    # 密集奖励按步长折算: 步长减半时每步的固定量也要减半, 每游戏秒的权重才不变.
+    scaled = RewardConfig(step_penalty=-0.002, close_reward=0.05, close_distance=0.3, dense_scale=0.5)
+    reward, components = compute_reward(None, near, scaled)
+    assert abs(components["step_penalty"] + 0.001) < 1e-12, components
+    assert abs(components["close"] - 0.025) < 1e-12, components
+    assert abs(reward - (0.025 - 0.001)) < 1e-9, (reward, components)
 
     LOGGER.info("奖励计算: 通过")
 
@@ -586,6 +629,87 @@ def test_normalizer_wrapper_depth() -> None:
     LOGGER.info("观测归一化只包一层: 通过")
 
 
+def test_evaluation_trace() -> None:
+    """评估时能把回合轨迹落成示范格式的 npz: 和人类示范逐步对比就靠这份数据."""
+
+    import shutil
+
+    import gymnasium as gym
+    from gymnasium import spaces
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import DummyVecEnv
+
+    from . import train as train_module
+
+    field_names = load_csharp_schema()
+    server = FakeGameServer(field_names, terminate_after=12)
+    server.start()
+    time.sleep(0.1)
+
+    work_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-eval"
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    work_dir.mkdir(parents=True)
+
+    class SpaceEnv(gym.Env):
+        """只为造一个观测/动作维度都匹配的空壳模型, 不碰游戏."""
+
+        def __init__(self) -> None:
+            self.observation_space = spaces.Box(-np.inf, np.inf, (len(field_names),), np.float32)
+            self.action_space = spaces.MultiDiscrete(np.asarray([3, 3, 2, 2, 2], dtype=np.int64))
+
+        def reset(self, *, seed=None, options=None):
+            return np.zeros(len(field_names), dtype=np.float32), {}
+
+        def step(self, action):
+            return np.zeros(len(field_names), dtype=np.float32), 0.0, True, False, {}
+
+    model_path = work_dir / "final.zip"
+    PPO("MlpPolicy", DummyVecEnv([SpaceEnv]), n_steps=8, batch_size=8, device="cpu").save(str(model_path))
+
+    parser = train_module.build_parser()
+    args = parser.parse_args(
+        [
+            "--eval",
+            "--model", str(model_path),
+            "--episodes", "2",
+            "--port", str(server.port),
+            "--runs-dir", str(work_dir / "runs"),
+            "--run-name", "eval-trace",
+            "--save-episodes", str(work_dir / "traces"),
+            "--stochastic",
+        ]
+    )
+
+    try:
+        train_module.run_evaluation(args, train_module.RewardConfig())
+    finally:
+        server.stop()
+
+    traces = sorted((work_dir / "traces").glob("episode-*.npz"))
+    assert len(traces) == 2, f"轨迹数量不对: {traces}"
+    data = np.load(traces[0], allow_pickle=True)
+    assert data["obs"].shape[1] == len(field_names), data["obs"].shape
+    assert data["action"].shape[1] == 5, data["action"].shape
+    assert (work_dir / "traces" / str(data["state_map"])).is_file(), "轨迹旁边缺少状态映射"
+
+    LOGGER.info("评估轨迹落盘: 通过 (%d 个回合, 每个 %d 步)", len(traces), data["obs"].shape[0])
+
+
+def test_granularity_scaling() -> None:
+    """换决策粒度时折扣因子要按游戏时间折算, 否则视界会随步长一起缩水."""
+
+    from .train import default_gamma
+
+    assert abs(default_gamma(6) - 0.9933) < 1e-3, default_gamma(6)
+    assert default_gamma(3) > 0.99, default_gamma(3)
+    for frames in (2, 3, 6, 12):
+        horizon_seconds = (1.0 / (1.0 - default_gamma(frames))) * frames / 60.0
+        assert 14.0 < horizon_seconds < 16.5, (frames, horizon_seconds)
+
+    LOGGER.info("决策粒度的折扣因子折算: 通过")
+
+
 def main() -> None:
     # Windows 控制台默认不是 UTF-8, 中文日志会变乱码.
     for stream in (sys.stdout, sys.stderr):
@@ -603,6 +727,8 @@ def main() -> None:
     test_normalizer_wrapper_depth()
     test_env_against_fake_server()
     test_training_dry_run()
+    test_evaluation_trace()
+    test_granularity_scaling()
     LOGGER.info("全部自检通过")
 
 

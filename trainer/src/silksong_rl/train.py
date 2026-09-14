@@ -23,10 +23,11 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from . import __version__
+from . import trace as trace_module
 from .client import EnvClient
 from .clips import build_clip
-from .env import SilksongBossEnv
-from .reward import RewardConfig
+from .env import DEFAULT_CLIP_FPS, SilksongBossEnv
+from .reward import HORIZON_SECONDS, REFERENCE_STEP_FRAMES, RewardConfig
 from .state_ids import VOCAB_FILE, load_vocabulary, save_vocabulary
 
 LOGGER = logging.getLogger("silksong_rl.train")
@@ -45,11 +46,21 @@ EPISODE_INFO_KEYS = (
     "close_steps",
     "close_attack_steps",
     "hit_steps",
+    "whiff_steps",
     "steps_within_02",
     "steps_within_03",
     "steps_within_04",
     "steps_within_05",
     "min_boss_distance",
+    "act_h0",
+    "act_h1",
+    "act_h2",
+    "act_v0",
+    "act_v1",
+    "act_v2",
+    "act_jump",
+    "act_attack",
+    "act_bind",
     "damage_per_swing",
     "damage_per_press",
     "clip_dir",
@@ -65,12 +76,15 @@ class ProgressCallback(BaseCallback):
         window: int = 20,
         episode_log: Path | None = None,
         clips_dir: Path | None = None,
+        clip_fps: int = 0,
     ) -> None:
         super().__init__()
         self.log_interval = log_interval
         self.window = window
         self.episode_log = episode_log
         self.clips_dir = clips_dir or Path("kills")
+        # 合成 mp4 时的帧率必须和插件抓帧的频率一致, 否则回放速度会不对.
+        self.clip_fps = clip_fps or 0
         self._current_clip_dir: str | None = None
         self._started = time.monotonic()
         self._last_report_step = 0
@@ -165,7 +179,11 @@ class ProgressCallback(BaseCallback):
         if not clip_dir:
             return
 
-        build_clip(clip_dir, self.clips_dir / f"kill-{self._wins:03d}-{time.strftime('%H%M%S')}.mp4")
+        destination = self.clips_dir / f"kill-{self._wins:03d}-{time.strftime('%H%M%S')}.mp4"
+        if self.clip_fps > 0:
+            build_clip(clip_dir, destination, fps=self.clip_fps)
+        else:
+            build_clip(clip_dir, destination)
 
     def _append_episode_log(self, episode: dict) -> None:
         """每个回合追加一行 JSON, 便于训练结束后做离线分析."""
@@ -192,6 +210,13 @@ class ProgressCallback(BaseCallback):
             "damage_per_swing": float(episode.get("damage_per_swing", 0.0)),
             "damage_per_press": float(episode.get("damage_per_press", 0.0)),
         }
+
+        # 其余诊断字段 (站位分档 / 命中步 / 动作占比) 按 info 里有什么就记什么,
+        # 这样以后加诊断量只需要改 EPISODE_INFO_KEYS, 不用再来动这里.
+        for key in EPISODE_INFO_KEYS:
+            if key in record or key == "clip_dir" or key not in episode:
+                continue
+            record[key] = float(episode[key])
 
         try:
             with self.episode_log.open("a", encoding="utf-8") as handle:
@@ -244,11 +269,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument("--speed", type=float, default=4.0, help="游戏内时间倍率, 只影响采集速度")
+    parser.add_argument(
+        "--step-frames",
+        type=int,
+        default=0,
+        help="一个决策步对应几个物理帧 (默认沿用插件配置的 6); 调小等于提高决策频率",
+    )
+    parser.add_argument(
+        "--max-episode-steps",
+        type=int,
+        default=0,
+        help="单回合步数上限 (默认沿用插件配置的 600); 改小决策步长时要相应放大",
+    )
+    parser.add_argument(
+        "--clip-fps",
+        type=int,
+        default=0,
+        help="击杀回放的抓帧频率 (默认沿用插件配置); 帧率高回放更顺, 但会挤一点训练吞吐",
+    )
+    parser.add_argument(
+        "--clip-seconds",
+        type=int,
+        default=0,
+        help="回放缓冲保留多少秒 (默认沿用插件配置)",
+    )
     parser.add_argument("--n-steps", type=int, default=1024, help="PPO 每次采样的步数")
     parser.add_argument("--batch-size", type=int, default=256, help="PPO 批大小")
-    parser.add_argument("--learning-rate", type=float, default=3e-4, help="学习率")
-    parser.add_argument("--gamma", type=float, default=0.99, help="折扣因子")
-    parser.add_argument("--ent-coef", type=float, default=0.01, help="熵系数")
+    parser.add_argument("--learning-rate", type=float, default=None, help="学习率; 微调模式默认 1e-4, 否则 3e-4")
+    parser.add_argument("--gamma", type=float, default=None, help="折扣因子; 不给就按决策粒度自动折算")
+    parser.add_argument("--ent-coef", type=float, default=None, help="熵系数; 微调模式默认 0.003, 否则 0.01")
     parser.add_argument("--target-kl", type=float, default=None, help="KL 早停阈值, 不设则不启用")
     parser.add_argument("--net-arch", default="256,256", help="策略网络层宽, 例如 256,256")
 
@@ -265,6 +314,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="每步停在攻击距离内就给这么多奖励 (密集项, 用来治'一直够不着')",
     )
     parser.add_argument("--close-distance", type=float, default=0.3, help="--close-reward 判定的归一化距离阈值")
+    parser.add_argument(
+        "--whiff-penalty",
+        type=float,
+        default=0.0,
+        help="够不着还挥刀时每步的奖励 (负数); 挥空占着出刀冷却, 等 Boss 进范围反而没刀可出",
+    )
 
     parser.add_argument("--checkpoint-every", type=int, default=20_000, help="每多少步存一次 checkpoint")
     parser.add_argument("--log-interval", type=int, default=2_000, help="每多少步打印一次进度")
@@ -274,12 +329,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=None, help="评估用的模型 (.zip)")
     parser.add_argument("--episodes", type=int, default=5, help="评估回合数")
     parser.add_argument(
+        "--save-episodes",
+        default=None,
+        help="评估时把每个回合的 (观测, 动作) 存成示范那样的 npz 到这个目录, 便于逐步对比",
+    )
+    parser.add_argument(
         "--stochastic",
         action="store_true",
         help="评估时按策略分布采样而不是取 argmax; 多维离散动作空间下 argmax 得到的联合动作可能落在分布之外",
     )
     parser.add_argument("--verbose", action="store_true", help="输出更详细的日志")
     return parser
+
+
+def default_gamma(step_frames: float) -> float:
+    """按决策粒度折算折扣因子, 让"有效视界"在游戏时间里保持约 15 秒.
+
+    6 个物理帧 (约 0.105 秒) 配 0.99 的视界只有 100 步 (约 10 秒); 步长减半以后同样的 100 步
+    只剩 5 秒, 一局 700 步的终局奖励 (击杀 / 阵亡) 会被折到几乎看不见, 策略会变得只顾眼前.
+    这里把视界统一到约 15 秒, 换粒度时"能看多远"不变.
+    """
+
+    return 1.0 - (max(step_frames, 1) / 60.0) / HORIZON_SECONDS
 
 
 def setup_logging(verbose: bool) -> None:
@@ -309,10 +380,26 @@ def build_env(
         client.set_speed(args.speed)
         LOGGER.info("已把游戏时间倍率设为 %s", args.speed)
 
+    # 决策粒度: 步长越小, 每个决策跨的游戏时间越短 (出手时机能卡得更准), 但一局要的步数按比例变多.
+    client.set_stepping(args.step_frames or 0, args.max_episode_steps or 0)
+    effective_frames = args.step_frames or int(client.hello.get("step_frames", REFERENCE_STEP_FRAMES))
+    reward_config.dense_scale = max(effective_frames, 1) / REFERENCE_STEP_FRAMES
+    if reward_config.dense_scale != 1.0:
+        LOGGER.info("密集奖励折算系数 %.3f (每步 %d 物理帧)", reward_config.dense_scale, effective_frames)
+
+    # 回放抓帧频率: 帧率越高回放越顺, 但每秒同步截屏的次数也越多, 会挤训练吞吐.
+    client.set_clip(args.clip_fps or 0, args.clip_seconds or 0)
+    effective_clip_fps = int(args.clip_fps or client.hello.get("clip_fps", DEFAULT_CLIP_FPS))
+    if args.clip_fps:
+        LOGGER.info("回放录制: %d 帧/秒", effective_clip_fps)
     if vocabulary is None:
         vocabulary = load_state_vocabulary(args)
 
-    return SilksongBossEnv(client, reward_config=reward_config, state_vocabulary=vocabulary)
+    env = SilksongBossEnv(client, reward_config=reward_config, state_vocabulary=vocabulary)
+    # 折扣因子要按实际生效的步长折算, 回放合成要按实际抓帧频率, 后面 run_training 会读这两个值.
+    env.step_frames = float(effective_frames)
+    env.clip_fps = effective_clip_fps
+    return env
 
 
 def resolve_state_vocabulary(args: argparse.Namespace, run_dir: Path) -> dict[str, int]:
@@ -389,14 +476,19 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
 
     net_arch = [int(width) for width in args.net_arch.split(",") if width.strip()]
 
+    client_clip_fps = int(env.clip_fps)
+
     learning_rate = args.learning_rate
-    ent_coef = args.ent_coef
+    ent_coef = 0.01 if args.ent_coef is None else args.ent_coef
     target_kl = args.target_kl
+    gamma = args.gamma if args.gamma is not None else default_gamma(env.step_frames)
+    if args.gamma is None and abs(gamma - 0.99) > 1e-9:
+        LOGGER.info("折扣因子按粒度折算为 %.4f (每步 %.0f 物理帧)", gamma, env.step_frames)
     if args.finetune:
         # 从人类示范克隆出来的策略是个"能用"的起点, 一上来用大学习率会把它冲掉,
         # 这里给一套保守值: 小学习率, 小熵, 并限制每次更新的 KL.
         learning_rate = 1e-4 if args.learning_rate == 3e-4 else args.learning_rate
-        ent_coef = 0.003 if args.ent_coef == 0.01 else args.ent_coef
+        ent_coef = 0.003 if args.ent_coef is None else args.ent_coef
         target_kl = 0.03 if args.target_kl is None else args.target_kl
         LOGGER.info("微调模式: 学习率 %s, 熵系数 %s, KL 上限 %s", learning_rate, ent_coef, target_kl)
 
@@ -421,7 +513,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             n_steps=args.n_steps,
             batch_size=args.batch_size,
             learning_rate=learning_rate,
-            gamma=args.gamma,
+            gamma=gamma,
             ent_coef=ent_coef,
             target_kl=target_kl,
         )
@@ -444,7 +536,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             n_steps=args.n_steps,
             batch_size=args.batch_size,
             learning_rate=learning_rate,
-            gamma=args.gamma,
+            gamma=gamma,
             ent_coef=ent_coef,
             target_kl=target_kl,
             policy_kwargs={"net_arch": net_arch},
@@ -459,6 +551,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             episode_log=run_dir / "episodes.jsonl",
             # 击杀那局的画面由插件的内存缓冲提供, 这里合成 mp4.
             clips_dir=run_dir / "kills",
+            clip_fps=int(client_clip_fps),
         )
     ]
     if args.checkpoint_every > 0:
@@ -516,12 +609,17 @@ def run_evaluation(args: argparse.Namespace, reward_config: RewardConfig) -> Non
     LOGGER.info("评估动作: %s", "确定性 argmax" if deterministic else "按策略分布采样")
 
     wins = 0
+    trace_dir = Path(args.save_episodes) if args.save_episodes else None
+    trace_map_name = time.strftime("state-map-%Y%m%d-%H%M%S.json")
     for episode in range(1, args.episodes + 1):
         observation = vec_env.reset()
+        trace = trace_module.EpisodeTrace() if trace_dir else None
         total_reward = 0.0
         steps = 0
         while True:
             action, _ = model.predict(observation, deterministic=deterministic)
+            if trace is not None and env.latest_raw_values is not None:
+                trace.add(env.latest_raw_values, action)
             observation, reward, done, infos = vec_env.step(action)
             total_reward += float(reward[0])
             steps += 1
@@ -539,6 +637,8 @@ def run_evaluation(args: argparse.Namespace, reward_config: RewardConfig) -> Non
                     stats.get("damage_dealt", 0.0),
                     stats.get("damage_taken", 0.0),
                 )
+                if trace is not None:
+                    trace.save(trace_dir, episode, env.client.field_names, env.client.state_map, trace_map_name)
                 break
 
     LOGGER.info("评估完成: %d/%d 回合击杀 Boss", wins, args.episodes)
@@ -559,6 +659,7 @@ def main() -> None:
         approach=args.approach,
         close_reward=args.close_reward,
         close_distance=args.close_distance,
+        whiff_penalty=args.whiff_penalty,
     )
 
     if os.environ.get("SILKSONG_RL_DRY_RUN"):

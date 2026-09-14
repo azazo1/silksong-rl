@@ -29,6 +29,13 @@ namespace RLEnv.Transport
             // 本回合的回放片段: 1 = 把缓冲里的画面落盘 (击杀), 0 = 丢掉 (没击杀)
             SaveClip = 7,
 
+            // 运行时调整"一个决策步由几个物理帧组成"与单回合步数上限
+            // (body 是两个 int32: 步长帧数, 单回合最大步数; 传 0 表示不改这一项)
+            SetStepping = 8,
+
+            // 运行时调整回放帧率与缓冲区时长 (body 是两个 int32: 帧率, 秒数; 传 0 表示不改这一项)
+            SetClip = 9,
+
             // mod -> Python
             Hello = 101,
             Observation = 102,

@@ -20,11 +20,15 @@ namespace RLEnv.Clips
 
         private readonly List<byte[]> _frames = new List<byte[]>(256);
 
-        private readonly float _intervalSeconds;
+        private float _intervalSeconds;
 
-        private readonly int _capacity;
+        private int _capacity;
 
-        private readonly int _jpegQuality;
+        private int _jpegQuality;
+
+        private int _fps;
+
+        private int _seconds;
 
         private float _nextCaptureAt;
 
@@ -34,11 +38,33 @@ namespace RLEnv.Clips
         {
             _log = log;
             _jpegQuality = jpegQuality < 1 ? 1 : (jpegQuality > 100 ? 100 : jpegQuality);
+            Reconfigure(fps, seconds);
+        }
 
-            int safeFps = fps < 1 ? 1 : fps;
-            int safeSeconds = seconds < 1 ? 1 : seconds;
-            _intervalSeconds = 1f / safeFps;
-            _capacity = safeFps * safeSeconds;
+        // 训练侧可以在运行时调帧率/缓冲时长: 帧率高回放更顺, 代价是每秒要同步截屏更多次
+        // (每次截屏都会等 GPU, 对训练吞吐有影响), 所以默认压得比较低.
+        internal void Reconfigure(int fps, int seconds)
+        {
+            _fps = fps < 1 ? 1 : fps;
+            _seconds = seconds < 1 ? 1 : seconds;
+            _intervalSeconds = 1f / _fps;
+            _capacity = _fps * _seconds;
+
+            while (_frames.Count > _capacity)
+            {
+                _frames.RemoveAt(0);
+                _dropped++;
+            }
+        }
+
+        internal int Fps
+        {
+            get { return _fps; }
+        }
+
+        internal int CapacitySeconds
+        {
+            get { return _seconds; }
         }
 
         internal int FrameCount

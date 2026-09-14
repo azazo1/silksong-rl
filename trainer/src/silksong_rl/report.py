@@ -20,6 +20,9 @@ from .env import DISTANCE_BUCKETS, bucket_key
 
 LOGGER = logging.getLogger("silksong_rl.report")
 
+# 一次挥刀的动画时长 (秒): 人类示范里 300 次出刀平均 2.7 步, 每步 0.1 秒.
+SWING_SECONDS = 0.24
+
 # 单元格里放的统计量: (标题, 字段名, 小数位, 是否带符号)
 # 列宽有限, 只放判断"打不动"最关键的几个: 按下刀 (出不出手), 贴近步 (有没有贴上去),
 # 每按伤害 (挥了到底打中没有). 更细的挥刀步 / 每刀伤害 / 最近距离在 episodes.jsonl 里.
@@ -152,7 +155,16 @@ def describe_placement(records: list[dict]) -> str:
 
     if any("hit_steps" in record for record in records):
         hits = field_mean(records, "hit_steps")
-        parts.append(f"命中步 {hits / steps * 100:.1f}% (每局 {hits:.1f} 步)")
+        parts.append(f"命中步 {hits / steps * 100:.1f}%")
+        # 每次出刀打中多少: 人类示范是 92% (按刀算). 挥刀动画约 0.24 秒, 除以步长就知道
+        # 一局出了多少刀 —— 换过决策粒度之后 "挥刀步" 不能直接跟人比.
+        dt = field_mean(records, "step_seconds")
+        swings = field_mean(records, "attack_steps")
+        if dt == dt and dt > 0 and swings > 0:
+            parts.append(f"每刀命中 {hits / (swings * dt / SWING_SECONDS) * 100:.0f}%")
+        whiffs = field_mean(records, "whiff_steps")
+        if whiffs == whiffs:
+            parts.append(f"挥空 {whiffs / steps * 100:.1f}%")
 
     return "站位: " + " ".join(parts)
 

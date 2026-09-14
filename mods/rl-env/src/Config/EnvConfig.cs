@@ -27,10 +27,10 @@ namespace RLEnv.Config
             ClipFps = config.Bind(
                 "General",
                 "ClipFps",
-                8,
+                20,
                 new ConfigDescription(
-                    "回放的抓帧频率; 画面要等 GPU, 频率越高越抢训练吞吐",
-                    new AcceptableValueRange<int>(1, 30)));
+                    "回放的抓帧频率; 画面要等 GPU, 频率越高越抢训练吞吐 (训练侧可以用 --clip-fps 覆盖)",
+                    new AcceptableValueRange<int>(1, 60)));
 
             ClipSeconds = config.Bind(
                 "General",
@@ -38,7 +38,7 @@ namespace RLEnv.Config
                 30,
                 new ConfigDescription(
                     "内存里保留最近多少秒的画面",
-                    new AcceptableValueRange<int>(5, 120)));
+                    new AcceptableValueRange<int>(5, 300)));
 
             ClipQuality = config.Bind(
                 "General",
