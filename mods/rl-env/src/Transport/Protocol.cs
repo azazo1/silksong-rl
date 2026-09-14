@@ -26,6 +26,9 @@ namespace RLEnv.Transport
             // 进入/退出人类示范录制模式 (body 是 int32: 1 开, 0 关)
             SetHumanMode = 6,
 
+            // 本回合的回放片段: 1 = 把缓冲里的画面落盘 (击杀), 0 = 丢掉 (没击杀)
+            SaveClip = 7,
+
             // mod -> Python
             Hello = 101,
             Observation = 102,

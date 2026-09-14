@@ -164,11 +164,12 @@ def test_reward() -> None:
 
 
 class FakeGameServer:
-    """最小可用的假游戏端: 只实现 Hello / 观测 / 三种命令."""
+    """最小可用的假游戏端: 只实现 Hello / 观测 / 几种命令."""
 
-    def __init__(self, field_names: list[str], terminate_after: int = 3) -> None:
+    def __init__(self, field_names: list[str], terminate_after: int = 3, clip_dir: str = "") -> None:
         self.field_names = field_names
         self.terminate_after = terminate_after
+        self.clip_dir = clip_dir
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind(("127.0.0.1", 0))
@@ -230,6 +231,23 @@ class FakeGameServer:
                         self.step_count += 1
                         flags = protocol.FLAG_TERMINATED if self.step_count >= self.terminate_after else 0
                         self._send_observation(connection, flags=flags, damage=2.0 if self.step_count == 1 else 0.0)
+                    elif message_type == protocol.MessageType.SET_HUMAN_MODE:
+                        self._send_text(connection, protocol.MessageType.STATUS, json.dumps({"human": True}))
+                    elif message_type == protocol.MessageType.SAVE_CLIP:
+                        # 回放片段由插件落盘, 路径通过 Status 回传; 这里用一个假路径走通链路.
+                        body = (int.from_bytes(payload[4:8], "little", signed=True) != 0)
+                        if body:
+                            self._send_text(
+                                connection,
+                                protocol.MessageType.STATUS,
+                                json.dumps({"state": "Stepping", "message": "clip:" + str(self.clip_dir)}),
+                            )
+                        else:
+                            self._send_text(
+                                connection,
+                                protocol.MessageType.STATUS,
+                                json.dumps({"state": "Stepping", "message": "回放片段已丢弃"}),
+                            )
                     elif message_type == protocol.MessageType.CLOSE:
                         return
         except OSError:
@@ -270,7 +288,8 @@ class FakeGameServer:
 
 def test_env_against_fake_server() -> None:
     field_names = load_csharp_schema()
-    server = FakeGameServer(field_names, terminate_after=3)
+    clip_dir = str(Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-clips")
+    server = FakeGameServer(field_names, terminate_after=3, clip_dir=clip_dir)
     server.start()
     time.sleep(0.1)
 
@@ -316,6 +335,10 @@ def test_env_against_fake_server() -> None:
         remapped, _ = with_vocabulary.reset()
         assert remapped[state_column] == 1.0, remapped[state_column]
         assert remapped[physics_column] == 0.0, remapped[physics_column]
+
+        # 回放: 击杀时 mod 会把画面目录通过 Status 回传, 训练侧照单收下.
+        assert client.save_clip(True) == clip_dir, "回放片段路径没有正确回传"
+        assert client.save_clip(False) is None
 
         env.close()
     finally:

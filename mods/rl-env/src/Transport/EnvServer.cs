@@ -277,6 +277,7 @@ namespace RLEnv.Transport
                     command.Speed = BitConverter.ToSingle(payload, 4);
                     return true;
                 case Protocol.MessageType.SetHumanMode:
+                case Protocol.MessageType.SaveClip:
                     if (payload.Length < 8)
                     {
                         return false;

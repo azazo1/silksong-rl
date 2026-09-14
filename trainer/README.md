@@ -101,9 +101,17 @@ uv run tensorboard --logdir runs
 ```
 
 产物都落在 `runs/<实验名>/`: `final.zip` (模型), `checkpoints/` (周期存档),
-`vecnormalize.pkl` (观测归一化统计), `tb/` (TensorBoard), `episodes.jsonl` (逐回合日志).
-周期存档旁边会同时落一份同一时刻的归一化统计, 因此 `--resume runs/<实验名>/checkpoints/ppo_20000_steps.zip`
-可以直接续训, 不会因为找不到统计而让网络看到不同的输入分布.
+`vecnormalize.pkl` (观测归一化统计), `state_vocab.json` (Boss 状态词表), `tb/` (TensorBoard),
+`episodes.jsonl` (逐回合日志), `kills/` (击杀回放 mp4).
+周期存档旁边会同时落一份同一时刻的归一化统计与状态词表, 因此
+`--resume runs/<实验名>/checkpoints/ppo_20000_steps.zip` 可以直接续训, 不会因为找不到这两样
+而让网络看到不同的输入 (统计从头来过 / 状态列被静默清零).
+
+### 击杀回放
+
+训练时插件会把最近若干秒的游戏画面滚动存在内存里 (其它窗口盖在上面也能抓到), 一局击杀才落盘,
+由训练侧用 ffmpeg 合成 `runs/<实验名>/kills/kill-NNN-HHMMSS.mp4` 并删掉原始帧; 没击杀就丢掉,
+所以长时间训练不会堆垃圾. 抓帧频率等参数在插件的 `ClipFps` / `ClipSeconds` 配置里.
 
 随时看某个实验的分段趋势 (不连游戏, 训练进行中也能看):
 
@@ -179,6 +187,7 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 | `src/silksong_rl/reward.py` | 奖励计算 |
 | `src/silksong_rl/fields.py` | 需要在训练侧屏蔽的会话相关观测列 |
 | `src/silksong_rl/state_ids.py` | Boss 状态编号的跨会话对齐 (词表与重映射) |
+| `src/silksong_rl/clips.py` | 把插件落盘的画面帧合成成回放 mp4 |
 | `src/silksong_rl/train.py` | 训练与评估入口 |
 | `src/silksong_rl/record.py` | 人类示范录制 |
 | `src/silksong_rl/dataset.py` | 示范数据的载入与归一化 |

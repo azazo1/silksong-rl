@@ -24,9 +24,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from . import __version__
 from .client import EnvClient
+from .clips import build_clip
 from .env import SilksongBossEnv
 from .reward import RewardConfig
-from .state_ids import VOCAB_FILE, load_vocabulary
+from .state_ids import VOCAB_FILE, load_vocabulary, save_vocabulary
 
 LOGGER = logging.getLogger("silksong_rl.train")
 
@@ -46,17 +47,26 @@ EPISODE_INFO_KEYS = (
     "min_boss_distance",
     "damage_per_swing",
     "damage_per_press",
+    "clip_dir",
 )
 
 
 class ProgressCallback(BaseCallback):
     """按固定步数间隔输出训练进度, 并把每个回合的结果追加到 episodes.jsonl."""
 
-    def __init__(self, log_interval: int = 2000, window: int = 20, episode_log: Path | None = None) -> None:
+    def __init__(
+        self,
+        log_interval: int = 2000,
+        window: int = 20,
+        episode_log: Path | None = None,
+        clips_dir: Path | None = None,
+    ) -> None:
         super().__init__()
         self.log_interval = log_interval
         self.window = window
         self.episode_log = episode_log
+        self.clips_dir = clips_dir or Path("kills")
+        self._current_clip_dir: str | None = None
         self._started = time.monotonic()
         self._last_report_step = 0
         self._last_report_time = self._started
@@ -85,9 +95,11 @@ class ProgressCallback(BaseCallback):
             self._damage_dealt += float(episode.get("damage_dealt", 0.0))
             self._damage_taken += float(episode.get("damage_taken", 0.0))
             self._attack_steps += float(episode.get("attack_steps", 0.0))
+            self._current_clip_dir = str(episode.get("clip_dir", "")) or None
 
             if episode.get("boss_kills", 0.0) > 0.0:
                 self._wins += 1
+                self._trigger_killcam()
             elif episode.get("player_deaths", 0.0) > 0.0:
                 self._losses += 1
             else:
@@ -141,6 +153,15 @@ class ProgressCallback(BaseCallback):
 
         return True
 
+    def _trigger_killcam(self) -> None:
+        """击杀时把插件落盘的画面合成成 mp4."""
+
+        clip_dir = str(self._current_clip_dir or "")
+        if not clip_dir:
+            return
+
+        build_clip(clip_dir, self.clips_dir / f"kill-{self._wins:03d}-{time.strftime('%H%M%S')}.mp4")
+
     def _append_episode_log(self, episode: dict) -> None:
         """每个回合追加一行 JSON, 便于训练结束后做离线分析."""
 
@@ -175,20 +196,24 @@ class ProgressCallback(BaseCallback):
 
 
 class CheckpointWithNormalizerCallback(CheckpointCallback):
-    """周期存档时顺手把观测归一化统计存到同一个目录.
+    """周期存档时顺手把观测归一化统计与 Boss 状态词表存到同一个目录.
 
-    只存模型的话, 从 checkpoint 续训会因为旁边找不到 vecnormalize.pkl 而从头统计,
-    网络看到的输入分布就和训练时不一致 (BC 与微调都依赖固定的归一化统计), 而不是
-    "少一点信息"这么简单.
+    只存模型的话, 从 checkpoint 续训会因为旁边找不到 vecnormalize.pkl 而从头统计, 网络看到的
+    输入分布就和训练时不一致 (BC 与微调都依赖固定的归一化统计); 状态词表同理: 找不到就会退回
+    把 Boss 状态列清零, 观测的语义直接变了.
     """
 
-    def __init__(self, save_freq: int, save_path: str, name_prefix: str, vec_normalize) -> None:
+    def __init__(self, save_freq: int, save_path: str, name_prefix: str, vec_normalize, vocabulary) -> None:
         super().__init__(save_freq=save_freq, save_path=save_path, name_prefix=name_prefix)
         self._vec_normalize = vec_normalize
+        self._vocabulary = vocabulary or {}
 
     def _on_step(self) -> bool:
-        if self._vec_normalize is not None and self.n_calls % self.save_freq == 0:
-            self._vec_normalize.save(str(Path(self.save_path) / "vecnormalize.pkl"))
+        if self.n_calls % self.save_freq == 0:
+            if self._vec_normalize is not None:
+                self._vec_normalize.save(str(Path(self.save_path) / "vecnormalize.pkl"))
+            if self._vocabulary:
+                save_vocabulary(Path(self.save_path) / VOCAB_FILE, self._vocabulary)
 
         return super()._on_step()
 
@@ -267,7 +292,11 @@ def setup_logging(verbose: bool) -> None:
     )
 
 
-def build_env(args: argparse.Namespace, reward_config: RewardConfig) -> SilksongBossEnv:
+def build_env(
+    args: argparse.Namespace,
+    reward_config: RewardConfig,
+    vocabulary: dict[str, int] | None = None,
+) -> SilksongBossEnv:
     # 游戏刚启动时插件要等 Unity 主循环跑起来才会回 Hello, 这里给足等待时间.
     client = EnvClient(host=args.host, port=args.port, connect_timeout=120.0, reset_timeout=180.0)
     client.connect()
@@ -275,7 +304,28 @@ def build_env(args: argparse.Namespace, reward_config: RewardConfig) -> Silksong
         client.set_speed(args.speed)
         LOGGER.info("已把游戏时间倍率设为 %s", args.speed)
 
-    return SilksongBossEnv(client, reward_config=reward_config, state_vocabulary=load_state_vocabulary(args))
+    if vocabulary is None:
+        vocabulary = load_state_vocabulary(args)
+
+    return SilksongBossEnv(client, reward_config=reward_config, state_vocabulary=vocabulary)
+
+
+def resolve_state_vocabulary(args: argparse.Namespace, run_dir: Path) -> dict[str, int]:
+    """找 Boss 状态词表, 并把它放进本次实验目录.
+
+    分段接力训练用的是上一段的 final.zip / checkpoint, 只有把词表跟着模型放在同一个目录,
+    下一段才会用同一套编号; 否则它会退回把状态列清零, 观测语义直接变了 (而且是静默的).
+    """
+
+    vocabulary = load_state_vocabulary(args)
+    if not vocabulary and (run_dir / VOCAB_FILE).is_file():
+        vocabulary = load_vocabulary(run_dir / VOCAB_FILE)
+        LOGGER.info("已载入 Boss 状态词表: %s (%d 项)", run_dir / VOCAB_FILE, len(vocabulary))
+
+    if vocabulary:
+        save_vocabulary(run_dir / VOCAB_FILE, vocabulary)
+
+    return vocabulary
 
 
 def load_state_vocabulary(args: argparse.Namespace) -> dict[str, int]:
@@ -326,7 +376,8 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
     LOGGER.info("实验目录: %s", run_dir.resolve())
     LOGGER.info("奖励配置: %s", reward_config.describe())
 
-    env = build_env(args, reward_config)
+    vocabulary = resolve_state_vocabulary(args, run_dir)
+    env = build_env(args, reward_config, vocabulary)
     # Monitor 默认会用自己那份 episode 统计覆盖 info["episode"], 这里把自定义字段带上.
     monitored = Monitor(env, info_keywords=EPISODE_INFO_KEYS)
     raw_env = DummyVecEnv([lambda: monitored])
@@ -401,6 +452,8 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
         ProgressCallback(
             log_interval=args.log_interval,
             episode_log=run_dir / "episodes.jsonl",
+            # 击杀那局的画面由插件的内存缓冲提供, 这里合成 mp4.
+            clips_dir=run_dir / "kills",
         )
     ]
     if args.checkpoint_every > 0:
@@ -410,6 +463,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
                 save_path=str(run_dir / "checkpoints"),
                 name_prefix="ppo",
                 vec_normalize=vec_env,
+                vocabulary=vocabulary,
             )
         )
 

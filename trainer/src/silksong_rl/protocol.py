@@ -25,6 +25,9 @@ class MessageType(IntEnum):
     SET_SPEED = 5
     SET_HUMAN_MODE = 6
 
+    # 一局结束时告诉 mod 这局是不是击杀 (1 = 保存回放画面, 0 = 丢掉)
+    SAVE_CLIP = 7
+
     # mod -> Python
     HELLO = 101
     OBSERVATION = 102

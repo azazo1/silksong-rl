@@ -18,6 +18,36 @@ namespace RLEnv.Config
                 true,
                 "训练侧连着的时候把分辨率与画质降到最低 (断开后恢复), 显著提高采样速度");
 
+            ClipEnabled = config.Bind(
+                "General",
+                "ClipEnabled",
+                true,
+                "回合进行中把游戏画面抓进内存环形缓冲, 好让击杀那局能被保存成回放; 关掉可以省一点性能");
+
+            ClipFps = config.Bind(
+                "General",
+                "ClipFps",
+                8,
+                new ConfigDescription(
+                    "回放的抓帧频率; 画面要等 GPU, 频率越高越抢训练吞吐",
+                    new AcceptableValueRange<int>(1, 30)));
+
+            ClipSeconds = config.Bind(
+                "General",
+                "ClipSeconds",
+                30,
+                new ConfigDescription(
+                    "内存里保留最近多少秒的画面",
+                    new AcceptableValueRange<int>(5, 120)));
+
+            ClipQuality = config.Bind(
+                "General",
+                "ClipQuality",
+                75,
+                new ConfigDescription(
+                    "JPEG 质量",
+                    new AcceptableValueRange<int>(30, 95)));
+
             Port = config.Bind(
                 "General",
                 "Port",
@@ -131,6 +161,14 @@ namespace RLEnv.Config
         internal ConfigEntry<bool> MuteAudio { get; private set; }
 
         internal ConfigEntry<bool> TrainingGraphics { get; private set; }
+
+        internal ConfigEntry<bool> ClipEnabled { get; private set; }
+
+        internal ConfigEntry<int> ClipFps { get; private set; }
+
+        internal ConfigEntry<int> ClipSeconds { get; private set; }
+
+        internal ConfigEntry<int> ClipQuality { get; private set; }
 
         internal ConfigEntry<int> Port { get; private set; }
 

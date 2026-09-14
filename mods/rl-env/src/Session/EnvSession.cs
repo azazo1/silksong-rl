@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using BepInEx.Logging;
 using RLEnv.Actions;
+using RLEnv.Clips;
 using RLEnv.Config;
 using RLEnv.Diagnostics;
 using RLEnv.Episode;
@@ -51,6 +52,8 @@ namespace RLEnv.Session
 
         private readonly TrainingGraphics _graphics = new TrainingGraphics();
 
+        private readonly ClipRecorder _clips;
+
         private Phase _phase;
 
         private string _statusMessage;
@@ -85,6 +88,11 @@ namespace RLEnv.Session
             });
 
             _runtimeSpeed = config.Speed.Value;
+            _clips = new ClipRecorder(
+                log,
+                config.ClipFps.Value,
+                config.ClipSeconds.Value,
+                config.ClipQuality.Value);
         }
 
         public bool isActiveAndEnabled
@@ -304,6 +312,9 @@ namespace RLEnv.Session
                 case Protocol.MessageType.SetHumanMode:
                     SetHumanMode(command.Flag);
                     break;
+                case Protocol.MessageType.SaveClip:
+                    HandleSaveClip(command.Flag);
+                    break;
                 case Protocol.MessageType.Reset:
                     BeginReset();
                     break;
@@ -329,6 +340,7 @@ namespace RLEnv.Session
             VirtualPad.Release(2);
             _speed.Apply(1f);
             _combat.ResetTotals();
+            _clips.BeginEpisode();
             _stepIndex = 0;
             _recordFrames = 0;
             _recordStepIndex = 0;
@@ -367,6 +379,26 @@ namespace RLEnv.Session
             }
         }
 
+        // 训练侧在一局结束时告诉我们这局是不是击杀: 击杀就把缓冲里的画面落盘, 否则丢掉.
+        private void HandleSaveClip(bool save)
+        {
+            if (!save)
+            {
+                _clips.Discard();
+                _server.SendStatus(ToSessionState(_phase), "回放片段已丢弃");
+                return;
+            }
+
+            string directory = _clips.Save(System.IO.Path.Combine(_plugin.ClipsRoot, "raw"));
+            if (directory == null)
+            {
+                _server.SendStatus(ToSessionState(_phase), "没有可保存的回放片段");
+                return;
+            }
+
+            _server.SendStatus(ToSessionState(_phase), "clip:" + directory);
+        }
+
         private void BeginStep(EnvAction action)
         {
             if (_phase != Phase.Running)
@@ -392,6 +424,8 @@ namespace RLEnv.Session
         private void TickStepping()
         {
             _combat.Refresh();
+            // 回合进行中才抓帧: 缓冲区只保留最近若干秒, 击杀时由训练侧决定是否落盘.
+            _clips.Tick(_config.ClipEnabled.Value);
 
             if (_combat.BossKilledStep || _combat.PlayerDiedStep)
             {

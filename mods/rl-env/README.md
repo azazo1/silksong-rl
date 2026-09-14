@@ -131,10 +131,23 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 | mod -> Python | 104 `Error` | JSON 错误 |
 | mod -> Python | 105 `StateMap` | JSON: Boss 状态 id 到 `FSM名=状态名` 的映射 |
 | mod -> Python | 106 `Record` | 人类示范样本: `[int32 stepIndex][float32 x N][int32 x 5]` |
+| Python -> mod | 7 `SaveClip` | 本回合的回放: 1 = 把画面缓冲落盘, 0 = 丢掉; 目录通过 `Status` (`clip:<路径>`) 回传 |
 
 `StateMap` 是增量发的: 每发现一个新的状态组合就补一条. id 按"发现顺序"自增, 所以每个会话
 都会重新编号, 跨会话直接用会串味; 训练侧靠这份映射按状态名重映射成稳定编号 (见
 `trainer/README.md` 的"观测"一节), 因此录制时它必须跟着示范一起存下来.
+
+## 回合回放
+
+训练时插件按 `ClipFps` (默认 8) 把游戏画面编码成 JPEG 放在内存环形缓冲里, 只保留最近
+`ClipSeconds` 秒. 一局结束时训练侧发 `SaveClip`: 击杀就把缓冲写成 `clips/raw/<时间戳>/frame-NNNN.jpg`
+(再由训练侧用 ffmpeg 合成 mp4 并删掉原始帧), 没击杀就清掉, 所以长跑不会往磁盘堆垃圾.
+
+为什么不用现成的抓屏工具: Windows 上的 gdigrab 之类抓的是"屏幕上那块区域", 游戏窗口只要不是
+最前面的那个, 抓到的就是盖在它上面的窗口 (实测抓到过一整段静止的文档窗口). Unity 的
+`ScreenCapture` 读的是游戏自己的后备缓冲, 被遮挡也照样能抓.
+
+相关配置: `ClipEnabled` (总开关), `ClipFps`, `ClipSeconds`, `ClipQuality`.
 
 观测字段的权威定义在 `src/Observation/ObservationSchema.cs`, 训练侧从 `Hello` 里读名字,
 不硬编码下标. 训练侧的对应实现在 `trainer/src/silksong_rl/protocol.py`.

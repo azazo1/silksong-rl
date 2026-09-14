@@ -112,7 +112,10 @@ $references = @(
     (Join-Path $managedDir 'UnityEngine.InputLegacyModule.dll'),
     (Join-Path $managedDir 'UnityEngine.TextRenderingModule.dll'),
     (Join-Path $managedDir 'UnityEngine.UIModule.dll'),
-    (Join-Path $managedDir 'UnityEngine.Physics2DModule.dll')
+    (Join-Path $managedDir 'UnityEngine.Physics2DModule.dll'),
+    # 回合回放要用 ScreenCapture 抓游戏自己的画面, 再用 ImageConversion 编码成 JPEG.
+    (Join-Path $managedDir 'UnityEngine.ScreenCaptureModule.dll'),
+    (Join-Path $managedDir 'UnityEngine.ImageConversionModule.dll')
 )
 
 foreach ($reference in $references) {

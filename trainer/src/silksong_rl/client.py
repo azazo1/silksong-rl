@@ -141,6 +141,43 @@ class EnvClient:
 
         self._send(protocol.encode_int_message(protocol.MessageType.SET_HUMAN_MODE, 1 if enabled else 0))
 
+    def save_clip(self, save: bool, timeout: float = 5.0) -> str | None:
+        """告诉 mod 这一局是不是击杀; 击杀时返回它落盘的画面目录, 否则返回 None.
+
+        mod 会把最近若干秒的画面缓冲写成 JPEG 序列, 目录路径通过 Status 消息回传.
+        """
+
+        self._send(protocol.encode_int_message(protocol.MessageType.SAVE_CLIP, 1 if save else 0))
+        if not save:
+            return None
+
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                LOGGER.warning("等回放片段路径超时")
+                return None
+
+            kind, body = self.read_message(timeout=remaining)
+            if kind is not protocol.MessageType.STATUS:
+                continue
+
+            # Status 是 {"state": ..., "message": ...} 的 JSON, 路径在 message 里.
+            try:
+                message = str(json.loads(str(body)).get("message", ""))
+            except json.JSONDecodeError:
+                message = str(body)
+
+            if message.startswith("clip:"):
+                return message[len("clip:") :]
+
+            if "片段" in message:
+                # 例如"没有可保存的回放片段": 不用再等.
+                LOGGER.debug("回放状态: %s", message)
+                return None
+
+            LOGGER.debug("回放相关状态: %s", message)
+
     def read_message(self, timeout: float | None = 30.0) -> tuple[protocol.MessageType, object]:
         """读一条消息, timeout 为 None 时一直等."""
 

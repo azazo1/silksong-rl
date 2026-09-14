@@ -130,6 +130,7 @@ class SilksongBossEnv(gym.Env):
             "close_steps": 0.0,
             "close_attack_steps": 0.0,
             "min_boss_distance": float("inf"),
+            "clip_dir": "",
         }
 
         return self._postprocess(observation.values), self._build_info(observation)
@@ -157,6 +158,9 @@ class SilksongBossEnv(gym.Env):
 
         if terminated or truncated:
             self._finalize_stats()
+            # 击杀那局把 mod 缓冲里的画面取回来 (没击杀就让 mod 直接丢掉, 免得长跑堆垃圾).
+            killed = self.episode_stats["boss_kills"] > 0.0
+            self.episode_stats["clip_dir"] = self._request_clip(killed) or ""
             info["episode"] = {
                 "r": self._episode_reward,
                 "l": self._episode_steps,
@@ -207,6 +211,15 @@ class SilksongBossEnv(gym.Env):
         stats["damage_per_press"] = stats["damage_dealt"] / presses if presses > 0.0 else 0.0
         if stats["min_boss_distance"] == float("inf"):
             stats["min_boss_distance"] = -1.0
+
+    def _request_clip(self, killed: bool) -> str | None:
+        """回合结束时处理 mod 侧的画面缓冲; 出错不该影响训练主流程."""
+
+        try:
+            return self.client.save_clip(killed)
+        except Exception as exc:  # noqa: BLE001 - 回放只是附加功能
+            LOGGER.warning("取回放片段失败: %s", exc)
+            return None
 
     def _build_info(self, observation: Observation) -> dict[str, Any]:
         info: dict[str, Any] = {

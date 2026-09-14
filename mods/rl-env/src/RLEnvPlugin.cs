@@ -71,6 +71,16 @@ namespace RLEnv
             get { return _server; }
         }
 
+        // 回放片段的落盘位置: 插件目录下的 clips/, 训练侧取走后会自己合成 mp4 并清掉原始帧.
+        internal string ClipsRoot
+        {
+            get
+            {
+                string pluginDirectory = Path.GetDirectoryName(Info.Location);
+                return Path.Combine(pluginDirectory ?? ".", "clips");
+            }
+        }
+
         private void Awake()
         {
             Instance = this;
