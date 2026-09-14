@@ -27,6 +27,7 @@ from . import trace as trace_module
 from .client import EnvClient
 from .clips import build_clip
 from .env import DEFAULT_CLIP_FPS, SilksongBossEnv
+from .fields import EXTRA_FEATURES
 from .imitation import DemoAnchorCallback, load_demo_arrays
 from .reward import HORIZON_SECONDS, REFERENCE_STEP_FRAMES, RewardConfig
 from .state_ids import VOCAB_FILE, load_vocabulary, save_vocabulary
@@ -52,6 +53,10 @@ EPISODE_INFO_KEYS = (
     "inactivity_penalties",
     "healed_masks",
     "bind_waste_steps",
+    "steps_at_height",
+    "max_player_y",
+    "swings",
+    "whiffed_swings",
     "steps_within_02",
     "steps_within_03",
     "steps_within_04",
@@ -288,8 +293,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--demo-anchor",
+        action="append",
         default=None,
-        help="人类示范目录: 每个 rollout 后用示范样本补一步模仿梯度, 当软先验用",
+        help="人类示范 (或策略击杀轨迹) 目录: 每个 rollout 后用示范样本补一步模仿梯度; 可给多次",
+    )
+    parser.add_argument(
+        "--extra-feature",
+        choices=EXTRA_FEATURES,
+        default="none",
+        help="占用被屏蔽的 physics_frame 列塞一个工程化特征 (range = 离够得着还差多远); 维度不变",
+    )
+    parser.add_argument(
+        "--save-kills",
+        default=None,
+        help="把击杀那局的 (观测, 动作) 存成示范格式到这个目录, 供自模仿",
     )
     parser.add_argument("--demo-weight", type=float, default=0.1, help="模仿损失的权重")
     parser.add_argument("--demo-batch", type=int, default=256, help="每步模仿用的示范批大小")
@@ -306,6 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="回放缓冲保留多少秒 (默认沿用插件配置)",
     )
     parser.add_argument("--n-steps", type=int, default=1024, help="PPO 每次采样的步数")
+    parser.add_argument("--n-epochs", type=int, default=10, help="PPO 每批数据重复训练多少轮")
     parser.add_argument("--batch-size", type=int, default=256, help="PPO 批大小")
     parser.add_argument("--learning-rate", type=float, default=None, help="学习率; 微调模式默认 1e-4, 否则 3e-4")
     parser.add_argument("--gamma", type=float, default=None, help="折扣因子; 不给就按决策粒度自动折算")
@@ -337,6 +355,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--heal-reward", type=float, default=0.0, help="每回一点血的奖励")
     parser.add_argument("--bind-waste-penalty", type=float, default=0.0, help="丝量不够还按住缚丝的每步惩罚 (负数)")
     parser.add_argument("--bind-silk-threshold", type=float, default=0.9, help="判定丝量够不够回血的比例阈值")
+    parser.add_argument(
+        "--height-reward",
+        type=float,
+        default=0.0,
+        help="与 Boss 高度差在容差内的每步奖励; 光靠距离势函数拿不到 (来回跳是净零)",
+    )
+    parser.add_argument("--height-tolerance", type=float, default=1.5, help="上面那个高度差的容差 (世界单位)")
+    parser.add_argument("--contact-reward", type=float, default=0.0, help="双方碰撞盒几乎挨上时的每步奖励")
+    parser.add_argument("--contact-distance", type=float, default=0.75, help="上面那个挨上的边缘间距阈值")
+    parser.add_argument(
+        "--swing-whiff-penalty",
+        type=float,
+        default=0.0,
+        help="一次出刀打完却没造成任何伤害的惩罚 (按刀结算, 不随决策粒度折算)",
+    )
 
     parser.add_argument("--checkpoint-every", type=int, default=20_000, help="每多少步存一次 checkpoint")
     parser.add_argument("--log-interval", type=int, default=2_000, help="每多少步打印一次进度")
@@ -416,6 +449,10 @@ def build_env(
     # 折扣因子要按实际生效的步长折算, 回放合成要按实际抓帧频率, 后面 run_training 会读这两个值.
     env.step_frames = float(effective_frames)
     env.clip_fps = effective_clip_fps
+    env.extra_feature = args.extra_feature
+    if args.save_kills:
+        env.kill_trace_dir = Path(args.save_kills)
+        LOGGER.info("击杀轨迹 (自模仿数据) 将存到: %s", env.kill_trace_dir)
     return env
 
 
@@ -529,6 +566,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             env=vec_env,
             tensorboard_log=str(run_dir / "tb"),
             n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
             batch_size=args.batch_size,
             learning_rate=learning_rate,
             gamma=gamma,
@@ -552,6 +590,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             "MlpPolicy",
             vec_env,
             n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
             batch_size=args.batch_size,
             learning_rate=learning_rate,
             gamma=gamma,
@@ -695,6 +734,11 @@ def main() -> None:
         heal_reward=args.heal_reward,
         bind_waste_penalty=args.bind_waste_penalty,
         bind_silk_threshold=args.bind_silk_threshold,
+        height_reward=args.height_reward,
+        height_tolerance=args.height_tolerance,
+        contact_reward=args.contact_reward,
+        contact_distance=args.contact_distance,
+        swing_whiff_penalty=args.swing_whiff_penalty,
     )
 
     if os.environ.get("SILKSONG_RL_DRY_RUN"):

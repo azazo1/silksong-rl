@@ -43,6 +43,12 @@ param(
     [string]$BindWastePenalty = '0',
     [string]$DemoAnchor = '',
     [string]$DemoWeight = '0.1',
+    [string]$HeightReward = '0',
+    [string]$ContactReward = '0',
+    [string]$SwingWhiffPenalty = '0',
+    [string]$NEpochs = '0',
+    [string]$SaveKills = '',
+    [string]$ExtraFeature = '',
     [string]$NStepsOverride = '0'
 )
 
@@ -154,8 +160,38 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
         Write-ChainLog "空按缚丝惩罚: $BindWastePenalty"
     }
     if ($DemoAnchor -ne '') {
-        $extraArgs += @('--demo-anchor', $DemoAnchor, '--demo-weight', $DemoWeight)
-        Write-ChainLog "示范先验: $DemoAnchor (权重 $DemoWeight)"
+        foreach ($anchor in ($DemoAnchor -split ',')) {
+            $trimmed = $anchor.Trim()
+            if ($trimmed -ne '') {
+                $extraArgs += @('--demo-anchor', $trimmed)
+                Write-ChainLog "示范先验: $trimmed (权重 $DemoWeight)"
+            }
+        }
+        $extraArgs += @('--demo-weight', $DemoWeight)
+    }
+    if ($HeightReward -ne '0') {
+        $extraArgs += @('--height-reward', $HeightReward)
+        Write-ChainLog "同高奖励: $HeightReward"
+    }
+    if ($ContactReward -ne '0') {
+        $extraArgs += @('--contact-reward', $ContactReward)
+        Write-ChainLog "贴脸奖励: $ContactReward"
+    }
+    if ($SwingWhiffPenalty -ne '0') {
+        $extraArgs += @('--swing-whiff-penalty', $SwingWhiffPenalty)
+        Write-ChainLog "按刀挥空惩罚: $SwingWhiffPenalty"
+    }
+    if ($NEpochs -ne '0') {
+        $extraArgs += @('--n-epochs', $NEpochs)
+        Write-ChainLog "每次更新轮数: $NEpochs"
+    }
+    if ($SaveKills -ne '') {
+        $extraArgs += @('--save-kills', $SaveKills)
+        Write-ChainLog "击杀轨迹 (自模仿) 存到: $SaveKills"
+    }
+    if ($ExtraFeature -ne '') {
+        $extraArgs += @('--extra-feature', $ExtraFeature)
+        Write-ChainLog "工程化特征: $ExtraFeature"
     }
     Push-Location $trainerDir
     try {

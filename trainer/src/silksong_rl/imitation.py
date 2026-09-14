@@ -21,15 +21,41 @@ from .dataset import load_demonstrations
 LOGGER = logging.getLogger("silksong_rl.imitation")
 
 
-def load_demo_arrays(directory: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """读示范, 并按训练侧同一套规则处理观测 (屏蔽会话列 + 按词表重映射状态编号)."""
+def load_demo_arrays(directories: str | Path | list[str | Path]) -> tuple[np.ndarray, np.ndarray]:
+    """读示范 (人类录像或策略自己的击杀轨迹), 按训练侧同一套规则处理观测.
 
-    observations, actions, vocabulary = load_demonstrations(directory)
-    if observations.size == 0:
-        raise ValueError(f"{directory} 里没有可用的示范样本")
+    可以给多个目录: 例如人类示范一份, 加上策略自己打出来的击杀轨迹一份 —— 后者是"自模仿",
+    状态分布比人类示范更贴当前策略, 格式完全一样所以能混在一起喂.
+    """
 
-    LOGGER.info("示范先验: %d 条样本, 动作维度 %d", len(observations), actions.shape[1])
-    return observations, actions
+    paths = directories if isinstance(directories, (list, tuple)) else [directories]
+    observations: list[np.ndarray] = []
+    actions: list[np.ndarray] = []
+    used: list[str] = []
+    for path in paths:
+        target = Path(path)
+        # 自模仿目录在第一局击杀之前是空的, 这种源直接跳过 (不能因为还没攒到数据就起不来).
+        if target.is_dir() and not any(target.glob("*.npz")):
+            LOGGER.info("示范源还没有数据, 跳过: %s", target)
+            continue
+        obs, act, _ = load_demonstrations(target)
+        observations.append(obs)
+        actions.append(act)
+        used.append(str(target))
+
+    if not observations:
+        raise ValueError(f"{paths} 里没有可用的示范样本")
+
+    all_obs = np.concatenate(observations)
+    all_act = np.concatenate(actions)
+
+    LOGGER.info(
+        "示范先验: %s 共 %d 条样本, 动作维度 %d",
+        " + ".join(used),
+        len(all_obs),
+        all_act.shape[1],
+    )
+    return all_obs, all_act
 
 
 class DemoAnchorCallback(BaseCallback):

@@ -108,6 +108,19 @@ uv run tensorboard --logdir runs
 更多样本, 代价是一局的步数按比例变多. 录制示范时用同样的 `--step-frames`, 否则克隆出来的策略
 节奏会和训练时对不上.
 
+### PPO 超参
+
+`--n-steps` / `--n-epochs` / `--batch-size` / `--learning-rate` / `--target-kl` / `--ent-coef` /
+`--gamma` 都是标准 PPO 的旋钮; 不显式给时, `--finetune` 模式用一套保守值 (lr 1e-4, 熵 0.003,
+KL 上限 0.03, `--gamma` 按决策粒度折算成"约 15 秒视界"). 长时间接着练时值得显式给:
+
+```shell
+# 实测: lr 1e-4 时 approx_kl 只有 0.01-0.02 (上限却是 0.03), 策略每步挪得太小;
+# 放开到 3e-4 / KL 上限 0.05 之后每刀命中率 30% -> 44%, 每游戏秒伤害 1.68 -> 2.14
+uv run silksong-train --resume runs/<实验>/final.zip --finetune --timesteps 500000 \
+    --learning-rate 3e-4 --target-kl 0.05 --n-steps 2048
+```
+
 产物都落在 `runs/<实验名>/`: `final.zip` (模型), `checkpoints/` (周期存档),
 `vecnormalize.pkl` (观测归一化统计), `state_vocab.json` (Boss 状态词表), `tb/` (TensorBoard),
 `episodes.jsonl` (逐回合日志), `kills/` (击杀回放 mp4).
@@ -144,6 +157,18 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 
 评估同样需要游戏在跑, 且插件处于等待 Reset 的状态.
 
+想看"到底能不能稳定击杀", 用 20 个回合并把动作按策略分布采样 (`--stochastic`): 多维离散动作的
+逐维 argmax 会退化 (实测经常站着不动), 而训练时本来就是按分布采样. 决策粒度也要跟训练时一致
+(显式给 `--step-frames`), 否则等于换了环境:
+
+```shell
+uv run silksong-train --eval --model runs/<实验>/final.zip --episodes 20 \
+    --stochastic --step-frames 3 --max-episode-steps 1200
+```
+
+不评估也能从训练日志里估击杀率: `episodes.jsonl` 每回合都有 `boss_kills`, 用
+`silksong-report --run runs/<实验>` 或后台看门脚本 (见 `.tmp/watch-run.ps1`) 都能看.
+
 ### 轨迹对比
 
 回合日志只说明"每局打了多少伤害", 要定位"刀为什么空"得看逐步轨迹. 评估时加
@@ -171,16 +196,52 @@ uv run silksong-traces --dir records/moss-mother-v3 --against .tmp/policy-traces
 | `--boss-kill` | 25.0 | 击杀 Boss |
 | `--player-death` | -25.0 | 自己阵亡 |
 | `--step-penalty` | -0.002 | 每个 step 的固定惩罚, 鼓励速战 |
-| `--approach` | 0.0 | 可选塑形: 靠近 Boss 的奖励系数 |
-| `--close-reward` | 0.0 | 可选塑形: 停在 `--close-distance` 以内的每步奖励 |
+| `--approach` | 0.0 | 可选塑形: 靠近 Boss 的奖励系数 (势函数形式, 不改变最优策略) |
+| `--close-reward` | 0.0 | 可选塑形: 停在 `--close-distance` (归一化距离) 以内的每步奖励 |
 | `--whiff-penalty` | 0.0 | 可选塑形: 够不着还出刀的每步惩罚 (用世界坐标判定) |
+| `--height-reward` | 0.0 | 可选塑形: 与 Boss 的竖直边缘间距在 `--height-tolerance` 内的每步奖励 |
+| `--contact-reward` | 0.0 | 可选塑形: 两个方向都几乎贴上 (`--contact-distance`) 的每步奖励 |
+| `--inactivity-penalty` | 0.0 | 可选塑形: 超过 `--inactivity-window` 秒没造成伤害的惩罚 (防止学会躲着不打) |
+| `--heal-reward` | 0.0 | 可选塑形: 每回一点血的奖励 |
+| `--bind-waste-penalty` | 0.0 | 可选塑形: 丝量不够还按住缚丝的每步惩罚 |
 
-`--step-penalty` / `--close-reward` / `--whiff-penalty` 是"每步固定量", 会按 `--step-frames`
-折算 (`dense_scale = 步长 / 6`), 换决策粒度时每游戏秒的权重不变; 事件型奖励 (伤害/击杀/阵亡)
-不受影响.
+`--step-penalty` / `--close-reward` / `--whiff-penalty` / `--height-reward` / `--contact-reward` /
+`--bind-waste-penalty` 都是"每步固定量", 会按 `--step-frames` 折算 (`dense_scale = 步长 / 6`),
+换决策粒度时每游戏秒的权重不变; 事件型奖励 (伤害/击杀/阵亡/回血/划水) 不受影响.
+
+为什么会有这么多塑形项: 逐条都是从人类示范里量出来的差距, 不是拍脑袋加的 —— 例如
+`--height-reward` 对应"人类 38% 的步数挂在 Boss 高度上, 而策略一直贴地面", `--whiff-penalty`
+对应"策略一半的挥刀发生在够不着的距离外". 每项的标定过程与实测数字记在
+`.tmp/kill-progress.md`; 打 Boss 时先只用伤害/击杀, 需要时再逐项打开.
 
 伤害数值来自插件对 `HealthManager.Hit` 的 hp 前后差统计, 不是面板数值, 已经过游戏的
 伤害缩放与免疫判定.
+
+### 示范先验
+
+```shell
+uv run silksong-train --resume runs/bc/bc.zip --demo-anchor records/moss-mother-v3 --demo-weight 0.1
+```
+
+`--demo-anchor` 会在每个 rollout 结束后, 用随机一批示范样本算一遍负对数似然并补一步梯度
+(观测走与训练完全相同的屏蔽/状态重映射/归一化流程). 它是"软先验"而不是硬模仿: 权重给小一点,
+只用来补 RL 自己不容易探索到的习惯 (例如"远离 Boss 时朝它跑"), 具体见 `src/silksong_rl/imitation.py`.
+
+同一个参数可以给多次, 也可以配 `--save-kills` 做**自模仿**: 每次击杀那局的 (观测, 动作) 会按示范
+格式落盘 (只留最近 4 局, 免得把人类示范淹掉), 下一段训练时把它一起当先验 —— 策略自己打出来的
+成功轨迹, 状态分布比人类示范更贴当前策略.
+
+```shell
+uv run silksong-train --resume runs/bc/bc.zip \
+    --demo-anchor records/moss-mother-v3 --demo-anchor runs/self-imitation \
+    --save-kills runs/self-imitation
+```
+
+### 工程化特征 (可选, 不动观测维度)
+
+`--extra-feature range` 会把"离够得着还差多远"写进观测里那列被屏蔽的 `physics_frame`
+(负值表示已经贴在挥刀范围内). 这列本来没有任何可用信息, 而插件 schema 的列数是固定的,
+所以征用它不改变观测维度, 老 checkpoint 照常能 load, 适合拿来做 A/B.
 
 ## 动作空间
 

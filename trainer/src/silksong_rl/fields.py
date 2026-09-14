@@ -56,3 +56,62 @@ def build_mask(field_names: list[str], include_state_fields: bool = True) -> lis
 
     names = IGNORED_FIELDS if include_state_fields else ALWAYS_IGNORED_FIELDS
     return [index for index, name in enumerate(field_names) if name in names]
+
+
+# 被清零的 physics_frame 列可以征用来放一个"工程化特征": 维度不变, 老 checkpoint 照常能load.
+# 选它的原因是这一列本来就没有可用信息 (值取决于本局游戏跑了多久), 而列数是固定的 (插件 schema),
+# 想加特征就只能从这种废列里挤.
+EXTRA_FEATURES: tuple[str, ...] = ("none", "range", "phase")
+
+# "当前状态持续了多久"这个特征的上限 (秒): 超过就当它已经稳定下来, 不再线性增长.
+PHASE_CAP_SECONDS = 5.0
+
+
+def phase_seconds(steps_in_state: int, step_frames: float) -> float:
+    """把"当前状态已经持续了多少个决策步"换算成秒 (并截到上限)."""
+
+    seconds = max(int(steps_in_state), 0) * max(float(step_frames), 1.0) / 60.0
+    return float(min(seconds, PHASE_CAP_SECONDS))
+
+
+def extra_feature_column(field_names: list[str]) -> int | None:
+    """返回可以征用的列下标 (没有就返回 None)."""
+
+    for name in ALWAYS_IGNORED_FIELDS:
+        if name in field_names:
+            return field_names.index(name)
+    return None
+
+
+def compute_extra_feature(kind: str, named: dict) -> float:
+    """算这个工程化特征的值.
+
+    - ``range``: 两个方向上"还差多远才够得着"的最大值 (负=已经在挥刀范围内). 命中要求双方的
+      碰撞盒几乎重叠, 而"够不够得着"需要网络自己从位置, 半宽半高, 朝向里推出来; 直接给出来
+      省掉这一步.
+    - ``phase``: 当前 Boss 状态已经持续了多少秒 (由调用方维护, 这里只做归一化). 这一项是把
+      "看不到动画处在哪一相"这个无记忆限制补一点回来, 帮策略判断该不该此刻出刀.
+    """
+
+    if kind == "range":
+        needed = (
+            "player_pos_x_world",
+            "player_pos_y_world",
+            "boss_pos_x_world",
+            "boss_pos_y_world",
+            "player_half_w",
+            "player_half_h",
+            "boss_half_w",
+            "boss_half_h",
+        )
+        if any(name not in named for name in needed):
+            return 0.0
+        dx = abs(named["player_pos_x_world"] - named["boss_pos_x_world"]) - (
+            named["player_half_w"] + named["boss_half_w"]
+        )
+        dy = abs(named["player_pos_y_world"] - named["boss_pos_y_world"]) - (
+            named["player_half_h"] + named["boss_half_h"]
+        )
+        return float(max(min(dx, 20.0), min(dy, 20.0)))
+
+    raise ValueError(f"未知的工程化特征: {kind}")

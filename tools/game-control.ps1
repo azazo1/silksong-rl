@@ -11,6 +11,10 @@
 工作方式: 每 PollSeconds 秒看一次请求文件, 内容为 start 或 stop 就执行一次,
 并把结果写到日志与结果文件, 然后删掉请求文件.
 
+存活时间: 默认最多活 MaxLifetimeMinutes 分钟 (常驻的提权进程有上限更安全).
+加上 -UntilGameExit 则改成"跟着游戏走": 见过游戏跑起来之后, 游戏退出 (崩溃或被关掉)
+再过 GameGoneGraceSeconds 秒就自己收工 —— 适合整夜训练, 游戏一挂助手也不必继续占着.
+
 运行方式: 由 DSH 以提权后台任务的方式常驻 (游戏实例本身是提权启动的, 非提权的进程
 既启动不了它, 也结束不掉它). 不需要 UAC, 也不需要 sudo 类工具.
 
@@ -27,7 +31,9 @@ param(
     [string]$ResultFile = '',
     [string]$LogFile = '',
     [int]$PollSeconds = 1,
-    [int]$MaxLifetimeMinutes = 720
+    [int]$MaxLifetimeMinutes = 720,
+    [switch]$UntilGameExit,
+    [int]$GameGoneGraceSeconds = 30
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,8 +107,30 @@ Write-Log "助手已启动 (pid $PID), 监听 $RequestFile"
 Write-Result 'ready'
 
 $deadline = (Get-Date).AddMinutes($MaxLifetimeMinutes)
+$seenGame = $false
+$goneSince = $null
+$exitReason = '助手已到最长存活时间, 退出'
+
 while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds $PollSeconds
+
+    if ($UntilGameExit) {
+        # 见过游戏跑起来之后, 游戏退出 (崩溃或被关掉) 再等一会儿就收工: 训练期间助手的存在意义
+        # 就是"能把游戏拉起来", 游戏都没了它也就不用占着了.
+        if (@(Get-GameProcesses).Count -gt 0) {
+            $seenGame = $true
+            $goneSince = $null
+        }
+        elseif ($seenGame) {
+            if (-not $goneSince) {
+                $goneSince = Get-Date
+            }
+            elseif (((Get-Date) - $goneSince).TotalSeconds -ge $GameGoneGraceSeconds) {
+                $exitReason = "游戏已退出超过 $GameGoneGraceSeconds 秒, 助手收工"
+                break
+            }
+        }
+    }
 
     if (-not (Test-Path -LiteralPath $RequestFile)) {
         continue
@@ -133,4 +161,4 @@ while ((Get-Date) -lt $deadline) {
     Remove-Item -LiteralPath $RequestFile -Force -ErrorAction SilentlyContinue
 }
 
-Write-Log '助手已到最长存活时间, 退出'
+Write-Log $exitReason

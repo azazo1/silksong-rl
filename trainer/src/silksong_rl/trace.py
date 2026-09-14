@@ -44,13 +44,15 @@ class EpisodeTrace:
         field_names: list[str],
         state_map: dict[int, str],
         state_map_name: str,
+        name: str | None = None,
     ) -> Path | None:
         if not self.observations:
             LOGGER.warning("第 %d 回合没有轨迹可存", index)
             return None
 
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"episode-{index:03d}.npz"
+        stem = name or f"episode-{index:03d}"
+        path = directory / f"{stem}.npz"
         np.savez_compressed(
             path,
             obs=np.stack(self.observations),

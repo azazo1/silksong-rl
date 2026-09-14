@@ -181,15 +181,39 @@ def report_run(path: Path, bins: int) -> bool:
     return True
 
 
+def per_swing_hit_rate(records: list[dict]) -> float:
+    """每刀命中率 (按刀算, 不是按步): 需要日志里有 swings / whiffed_swings."""
+
+    if not any("swings" in record for record in records):
+        return float("nan")
+
+    swings = field_mean(records, "swings")
+    whiffs = field_mean(records, "whiffed_swings")
+    if swings <= 0:
+        return float("nan")
+    return (swings - whiffs) / swings
+
+
+def damage_per_second(records: list[dict]) -> float:
+    """每游戏秒伤害: 换过决策粒度之后, "每步伤害" 没法跨实验比, 这个可以."""
+
+    seconds = field_mean(records, "step_seconds")
+    length = field_mean(records, "length")
+    if seconds != seconds or seconds <= 0 or length <= 0:
+        return float("nan")
+    return field_mean(records, "damage_dealt") / (length * seconds)
+
+
 def compare_runs(paths: list[Path]) -> None:
     """把多个实验并排成一张窄表, 用来看"换了配置之后到底有没有变化".
 
-    趋势列取后两段的造成伤害之差: 还在涨 / 差不多 / 在掉.
+    除了胜场与伤害, 还给出每游戏秒伤害与每刀命中率 —— 前者跨决策粒度可比, 后者是"执行精度"
+    唯一直接的量. 趋势列取后两段的造成伤害之差: 还在涨 / 差不多 / 在掉.
     """
 
     header = (
-        f"{'实验':<16} {'回合':>5} {'胜':>3} {'回报':>8} {'长度':>7} {'伤害':>7} "
-        f"{'按下刀':>7} {'贴近步':>7} {'每按伤害':>8} {'后段趋势':>10}"
+        f"{'实验':<16} {'回合':>5} {'胜':>4} {'击杀率':>7} {'伤害/秒':>8} {'每刀命中':>8} "
+        f"{'伤害':>7} {'贴近步':>7} {'每按伤害':>8} {'后段趋势':>10}"
     )
     print(header)
     print("-" * len(header))
@@ -210,11 +234,11 @@ def compare_runs(paths: list[Path]) -> None:
             trend = "-"
 
         print(
-            f"{path.parent.name:<16} {len(records):>5} {wins:>3} "
-            f"{format_value(field_mean(records, 'reward'), 2, True):>8} "
-            f"{format_value(field_mean(records, 'length'), 1, False):>7} "
+            f"{path.parent.name:<16} {len(records):>5} {wins:>4} "
+            f"{wins / len(records) * 100:>6.1f}% "
+            f"{format_value(damage_per_second(records), 2, False):>8} "
+            f"{format_value(per_swing_hit_rate(records) * 100, 0, False):>7}% "
             f"{format_value(field_mean(records, 'damage_dealt'), 1, False):>7} "
-            f"{format_value(field_mean(records, 'attack_pressed_steps'), 0, False):>7} "
             f"{format_value(field_mean(records, 'close_steps'), 0, False):>7} "
             f"{format_value(field_mean(records, 'damage_per_press'), 2, False):>8} "
             f"{trend:>10}"

@@ -203,6 +203,45 @@ def test_reward() -> None:
     assert abs(components["close"] - 0.025) < 1e-12, components
     assert abs(reward - (0.025 - 0.001)) < 1e-9, (reward, components)
 
+    # 同高 / 贴脸: 都用世界坐标的边缘间距判定, 两条都只在阈值内给.
+    # 半宽半高要显式给 (合成观测里默认全是 0), 否则间距算出来跟真机不一样.
+    size = {"player_half_w": 0.25, "player_half_h": 1.0, "boss_half_w": 0.71, "boss_half_h": 1.43}
+    reach_config = RewardConfig(height_reward=0.15, height_tolerance=1.5, contact_reward=0.3, contact_distance=0.75)
+    same_height = observation(
+        boss_alive=1.0,
+        player_pos_x_world=10.0,
+        boss_pos_x_world=20.0,
+        player_pos_y_world=18.0,
+        boss_pos_y_world=20.4,
+        **size,
+    )
+    _, components = compute_reward(None, same_height, reach_config)
+    assert abs(components["height"] - 0.15) < 1e-9, components
+    assert components["contact"] == 0.0, "横向还差 10 个单位, 不算贴脸"
+
+    touching = observation(
+        boss_alive=1.0,
+        player_pos_x_world=10.0,
+        boss_pos_x_world=11.0,
+        player_pos_y_world=18.0,
+        boss_pos_y_world=19.0,
+        **size,
+    )
+    _, components = compute_reward(None, touching, reach_config)
+    assert abs(components["contact"] - 0.3) < 1e-9, components
+    assert abs(components["height"] - 0.15) < 1e-9, components
+
+    too_far = observation(
+        boss_alive=1.0,
+        player_pos_x_world=10.0,
+        boss_pos_x_world=30.0,
+        player_pos_y_world=18.0,
+        boss_pos_y_world=26.0,
+        **size,
+    )
+    _, components = compute_reward(None, too_far, reach_config)
+    assert components["contact"] == 0.0 and components["height"] == 0.0, components
+
     LOGGER.info("奖励计算: 通过")
 
 
@@ -424,6 +463,10 @@ def test_training_dry_run() -> None:
             # 顺便覆盖"示范先验"这条路径: 每个 rollout 后用示范样本补一步模仿梯度.
             "--demo-anchor", str(repo_root / "trainer" / "records" / "moss-mother-v3"),
             "--demo-weight", "0.05",
+            # 自模仿: 击杀那局的轨迹要能落成示范格式, 下一段才能拿它当先验.
+            "--save-kills", str(run_dir / "kill-traces"),
+            # 顺便走一遍"征用 physics_frame 列放工程化特征"的写入路径.
+            "--extra-feature", "range",
         ]
     )
 
@@ -738,7 +781,15 @@ def test_extra_rewards() -> None:
     )
     env = SilksongBossEnv(EnvClient(port=1), reward_config=config, connect=False)
     env.step_frames = 6.0  # 0.1 秒/步, 1 秒窗口 = 10 步
-    env.episode_stats = {"inactivity_penalties": 0.0, "healed_masks": 0.0, "bind_waste_steps": 0.0}
+    env.episode_stats = {
+        "inactivity_penalties": 0.0,
+        "healed_masks": 0.0,
+        "bind_waste_steps": 0.0,
+        "steps_at_height": 0.0,
+        "max_player_y": 0.0,
+        "swings": 0.0,
+        "whiffed_swings": 0.0,
+    }
     env._steps_since_damage = 0
     env._previous_health = 5.0
 
@@ -767,7 +818,66 @@ def test_extra_rewards() -> None:
     _, components = env._extra_rewards(observation(player_silk_ratio=0.2), [2, 1, 0, 0, 0])
     assert components["bind_waste"] == 0.0, "没按缚丝不该罚"
 
-    LOGGER.info("行为卫生奖励 (划水/回血/空按): 通过")
+    # 按刀结算的挥空: 出刀期间没打中就罚一次, 打中则不罚.
+    env.reward_config = RewardConfig(swing_whiff_penalty=-1.0)
+    env._swing_active = False
+    env._swing_hit = False
+    _, components = env._extra_rewards(observation(player_attacking=1.0), [2, 1, 0, 0, 0])
+    assert components["swing_whiff"] == 0.0 and env.episode_stats["swings"] == 1.0
+    _, components = env._extra_rewards(observation(), [2, 1, 0, 0, 0])
+    assert abs(components["swing_whiff"] + 1.0) < 1e-9, components
+    assert env.episode_stats["whiffed_swings"] == 1.0
+
+    env._swing_active = False
+    env._swing_hit = False
+    env._extra_rewards(observation(player_attacking=1.0), [2, 1, 0, 0, 0])
+    _, components = env._extra_rewards(observation(player_attacking=1.0, damage_dealt_step=5.0), [2, 1, 0, 0, 0])
+    _, components = env._extra_rewards(observation(), [2, 1, 0, 0, 0])
+    assert components["swing_whiff"] == 0.0, "打中的刀不该罚"
+    assert env.episode_stats["whiffed_swings"] == 1.0
+
+    LOGGER.info("行为卫生奖励 (划水/回血/空按/按刀挥空): 通过")
+
+
+def test_extra_feature() -> None:
+    """被屏蔽的 physics_frame 列可以征用来放工程化特征, 而且不改变观测维度."""
+
+    from .client import EnvClient, Observation
+    from .env import SilksongBossEnv
+    from .fields import PHASE_CAP_SECONDS, compute_extra_feature, extra_feature_column, phase_seconds
+
+    names = load_csharp_schema()
+    column = extra_feature_column(names)
+    assert column is not None, "观测里应当有一列可以征用"
+    assert names[column] == "physics_frame", names[column]
+
+    values = {name: 0.0 for name in names}
+    values.update(
+        {
+            "player_pos_x_world": 10.0,
+            "player_pos_y_world": 18.0,
+            "boss_pos_x_world": 13.0,
+            "boss_pos_y_world": 20.4,
+            "player_half_w": 0.25,
+            "player_half_h": 1.0,
+            "boss_half_w": 0.71,
+            "boss_half_h": 1.43,
+        }
+    )
+    # 横向还差 13 - 0.25 - 0.71 = 2.04, 纵向还差 2.4 - 2.43 = -0.03; 两个方向都得够得着才能命中,
+    # 所以取较大的那个 (此时横向是瓶颈).
+    assert abs(compute_extra_feature("range", values) - 2.04) < 1e-6, compute_extra_feature("range", values)
+
+    close = dict(values)
+    close.update({"boss_pos_x_world": 11.0, "boss_pos_y_world": 19.0})
+    # 横向 11 - 0.96 = 0.04, 纵向 1.0 - 2.43 = -1.43, 取 0.04 (已经贴上了).
+    assert abs(compute_extra_feature("range", close) - 0.04) < 1e-6, compute_extra_feature("range", close)
+
+    # phase: 当前状态持续的秒数, 按决策步长换算并截到上限.
+    assert abs(phase_seconds(4, 3.0) - 0.2) < 1e-9, phase_seconds(4, 3.0)
+    assert abs(phase_seconds(1000, 3.0) - PHASE_CAP_SECONDS) < 1e-9, phase_seconds(1000, 3.0)
+
+    LOGGER.info("工程化特征 (征用 physics_frame 列): 通过")
 
 
 def main() -> None:
@@ -790,6 +900,7 @@ def main() -> None:
     test_evaluation_trace()
     test_granularity_scaling()
     test_extra_rewards()
+    test_extra_feature()
     LOGGER.info("全部自检通过")
 
 

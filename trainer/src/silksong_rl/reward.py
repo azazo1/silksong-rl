@@ -45,6 +45,16 @@ class RewardConfig:
     heal_reward: float = 0.0
     bind_waste_penalty: float = 0.0
     bind_silk_threshold: float = 0.9
+    # 与 Boss 同高的奖励: 苔藓之母大部分时间飞在主角头顶 (边缘间距中位 3.4 个单位, 而一次满跳
+    # 只上升约 1.7), 人类靠"连着跳"把自己挂在 Boss 的高度上 (38% 的步数在 y>20 的空中),
+    # 而策略一直贴地面 (y 的 p90 只有 18.7). 距离势函数只能奖励"净缩短", 来回跳是净零,
+    # 所以这里单独给"高度差在容差内"一个每步奖励.
+    height_reward: float = 0.0
+    height_tolerance: float = 1.5
+    # 贴脸奖励: 双方碰撞盒几乎挨上时给. 人类 62% 的挥刀都发生在盒子重叠的位置, 而策略只有 28%
+    # (它常在"够得着但差一截"的距离出手), 这是命中率上不去的最后一段距离.
+    contact_reward: float = 0.0
+    contact_distance: float = 0.75
     boss_hp_ratio_bonus: float = 0.0
     clip: float = 0.0
     # 密集奖励按 "每 0.1 秒游戏时间" 折算: 换了决策粒度 (--step-frames) 之后,
@@ -59,16 +69,26 @@ class RewardConfig:
             f"贴身 {self.close_reward:+.3f}/步 (<{self.close_distance}), "
             f"挥空 {self.whiff_penalty:+.3f}/步, "
             f"划水 {self.inactivity_penalty:+.2f}/{self.inactivity_window:g}秒, "
+            f"同高 {self.height_reward:+.3f}/步 (<{self.height_tolerance}), "
+            f"贴脸 {self.contact_reward:+.3f}/步 (<{self.contact_distance}), "
             f"回血 {self.heal_reward:+.2f}/点, 空按缚丝 {self.bind_waste_penalty:+.3f}/步, "
+            f"按刀挥空 {self.swing_whiff_penalty:+.2f}/刀, "
             f"血量奖励 {self.boss_hp_ratio_bonus:+.2f}"
         )
 
 
-def out_of_reach(named: dict) -> bool:
-    """这一步的挥刀够不够得着 Boss (Boss 不在场时不算挥空)."""
+def vertical_gap(named: dict) -> float | None:
+    """双方碰撞盒的竖直边缘间距 (负数=重叠), 观测里没有世界坐标时返回 None."""
 
-    if float(named.get("boss_alive", 0.0)) <= 0.5:
-        return False
+    needed = ("player_pos_y_world", "boss_pos_y_world", "player_half_h", "boss_half_h")
+    if any(name not in named for name in needed):
+        return None
+
+    return abs(named["player_pos_y_world"] - named["boss_pos_y_world"]) - (named["player_half_h"] + named["boss_half_h"])
+
+
+def edge_gaps(named: dict) -> tuple[float, float] | None:
+    """双方碰撞盒在两个方向上的边缘间距 (负数=重叠); 缺世界坐标时返回 None."""
 
     needed = (
         "player_pos_x_world",
@@ -81,10 +101,24 @@ def out_of_reach(named: dict) -> bool:
         "boss_half_h",
     )
     if any(name not in named for name in needed):
-        return False  # 观测里没有世界坐标就没法判, 宁可不算
+        return None
 
     dx = abs(named["player_pos_x_world"] - named["boss_pos_x_world"]) - (named["player_half_w"] + named["boss_half_w"])
     dy = abs(named["player_pos_y_world"] - named["boss_pos_y_world"]) - (named["player_half_h"] + named["boss_half_h"])
+    return dx, dy
+
+
+def out_of_reach(named: dict) -> bool:
+    """这一步的挥刀够不够得着 Boss (Boss 不在场时不算挥空)."""
+
+    if float(named.get("boss_alive", 0.0)) <= 0.5:
+        return False
+
+    gaps = edge_gaps(named)
+    if gaps is None:
+        return False  # 观测里没有世界坐标就没法判, 宁可不算
+
+    dx, dy = gaps
     return dx > REACH_DX or dy > REACH_DY
 
 
@@ -106,6 +140,8 @@ def compute_reward(previous: Observation | None, current: Observation, config: R
         "approach": 0.0,
         "close": 0.0,
         "whiff": 0.0,
+        "height": 0.0,
+        "contact": 0.0,
         "boss_hp_ratio": 0.0,
     }
 
@@ -126,6 +162,18 @@ def compute_reward(previous: Observation | None, current: Observation, config: R
     if config.whiff_penalty != 0.0:
         if float(named.get("player_attacking", 0.0)) > 0.5 and out_of_reach(named):
             components["whiff"] = config.whiff_penalty * config.dense_scale
+
+    # 和 Boss 同高: 这条是给"跳上去贴着打"用的, 光靠距离势函数拿不到 (来回跳是净零).
+    if config.height_reward != 0.0 and float(named.get("boss_alive", 0.0)) > 0.5:
+        gap = vertical_gap(named)
+        if gap is not None and abs(gap) < config.height_tolerance:
+            components["height"] = config.height_reward * config.dense_scale
+
+    # 贴脸: 两个方向都几乎挨上才算, 这是命中率最后卡住的那一段距离.
+    if config.contact_reward != 0.0 and float(named.get("boss_alive", 0.0)) > 0.5:
+        gaps = edge_gaps(named)
+        if gaps is not None and max(gaps) < config.contact_distance:
+            components["contact"] = config.contact_reward * config.dense_scale
 
     if config.boss_hp_ratio_bonus != 0.0:
         alive = float(named.get("boss_alive", 0.0))
