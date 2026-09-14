@@ -478,7 +478,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
 
     client_clip_fps = int(env.clip_fps)
 
-    learning_rate = args.learning_rate
+    learning_rate = 3e-4 if args.learning_rate is None else args.learning_rate
     ent_coef = 0.01 if args.ent_coef is None else args.ent_coef
     target_kl = args.target_kl
     gamma = args.gamma if args.gamma is not None else default_gamma(env.step_frames)
@@ -487,7 +487,8 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
     if args.finetune:
         # 从人类示范克隆出来的策略是个"能用"的起点, 一上来用大学习率会把它冲掉,
         # 这里给一套保守值: 小学习率, 小熵, 并限制每次更新的 KL.
-        learning_rate = 1e-4 if args.learning_rate == 3e-4 else args.learning_rate
+        # 显式给了参数就按给的来 (跑到几十万步之后起点早就不是重点了, 该加速就加速).
+        learning_rate = 1e-4 if args.learning_rate is None else args.learning_rate
         ent_coef = 0.003 if args.ent_coef is None else args.ent_coef
         target_kl = 0.03 if args.target_kl is None else args.target_kl
         LOGGER.info("微调模式: 学习率 %s, 熵系数 %s, KL 上限 %s", learning_rate, ent_coef, target_kl)

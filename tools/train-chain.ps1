@@ -34,7 +34,9 @@ param(
     [int]$NSteps = 1024,
     [string]$EntCoef = '0',
     [int]$ClipFps = 0,
-    [int]$ClipSeconds = 0
+    [int]$ClipSeconds = 0,
+    [string]$LearningRate = '0',
+    [string]$TargetKl = '0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -123,6 +125,14 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
     if ($ClipSeconds -gt 0) {
         $extraArgs += @('--clip-seconds', "$ClipSeconds")
         Write-ChainLog "回放缓冲: $ClipSeconds 秒"
+    }
+    if ($LearningRate -ne '0') {
+        $extraArgs += @('--learning-rate', $LearningRate)
+        Write-ChainLog "学习率: $LearningRate"
+    }
+    if ($TargetKl -ne '0') {
+        $extraArgs += @('--target-kl', $TargetKl)
+        Write-ChainLog "KL 上限: $TargetKl"
     }
     Push-Location $trainerDir
     try {
