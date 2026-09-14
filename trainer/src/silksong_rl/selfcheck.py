@@ -29,6 +29,7 @@ from . import protocol
 from .client import EnvClient
 from .env import SilksongBossEnv
 from .reward import RewardConfig, compute_reward
+from .state_ids import VOCAB_FILE, load_vocabulary, save_state_map
 
 LOGGER = logging.getLogger("silksong_rl.selfcheck")
 
@@ -144,6 +145,20 @@ def test_reward() -> None:
     kill = observation(boss_killed_step=1.0, boss_alive=0.0)
     reward, _ = compute_reward(None, kill, config)
     assert reward > config.boss_kill * 0.9
+
+    # 贴身奖励只在"活着 + 进入阈值"时给, 而且要能被关掉.
+    close_config = RewardConfig(close_reward=0.05, close_distance=0.3)
+    near = observation(boss_alive=1.0, boss_distance_n=0.2)
+    reward, components = compute_reward(None, near, close_config)
+    assert abs(components["close"] - 0.05) < 1e-9, components
+    far = observation(boss_alive=1.0, boss_distance_n=0.5)
+    _, components = compute_reward(None, far, close_config)
+    assert components["close"] == 0.0, components
+    dead = observation(boss_alive=0.0, boss_distance_n=0.2)
+    _, components = compute_reward(None, dead, close_config)
+    assert components["close"] == 0.0, components
+    _, components = compute_reward(None, near, config)
+    assert components["close"] == 0.0, components
 
     LOGGER.info("奖励计算: 通过")
 
@@ -286,6 +301,22 @@ def test_env_against_fake_server() -> None:
         env.reset()
         _, _, terminated, _, _ = env.step((0, 0, 0, 0, 0))
         assert not terminated
+
+        # 有词表时 Boss 状态列按名字重映射 (假游戏端发的映射是 0 -> health_manager_enemy=Idle),
+        # 没有词表时同一列清零; 与游戏进程时长有关的列无论哪种情况都清零.
+        state_column = client.field_names.index("boss_state_id")
+        physics_column = client.field_names.index("physics_frame")
+        assert observation[state_column] == 0.0, observation[state_column]
+
+        with_vocabulary = SilksongBossEnv(
+            client,
+            RewardConfig(),
+            state_vocabulary={"health_manager_enemy=Idle": 1},
+        )
+        remapped, _ = with_vocabulary.reset()
+        assert remapped[state_column] == 1.0, remapped[state_column]
+        assert remapped[physics_column] == 0.0, remapped[physics_column]
+
         env.close()
     finally:
         server.stop()
@@ -320,16 +351,216 @@ def test_training_dry_run() -> None:
             "--n-steps", "32",
             "--batch-size", "16",
             "--log-interval", "32",
-            "--checkpoint-every", "0",
+            # 顺手验证周期存档: 存档旁边必须同时落一份观测归一化统计, 否则从 checkpoint 续训
+            # 会因为找不到统计而从零开始, 网络看到的输入分布与训练时不一致.
+            "--checkpoint-every", "32",
         ]
     )
 
     try:
         model_path = train_module.run_training(args, train_module.RewardConfig())
         assert model_path.exists(), model_path
-        LOGGER.info("训练干跑: 通过 (模型 %s)", model_path.name)
+
+        checkpoints = sorted((run_dir / "dry-run" / "checkpoints").glob("ppo_*_steps.zip"))
+        assert checkpoints, "没有生成周期存档"
+        assert checkpoints[0].with_name("vecnormalize.pkl").is_file(), "周期存档旁边缺少归一化统计"
+        LOGGER.info("训练干跑: 通过 (模型 %s, 周期存档 %s)", model_path.name, checkpoints[0].name)
     finally:
         server.stop()
+
+
+def test_state_vocabulary() -> None:
+    """跨会话对齐: 同一个 Boss 状态在两次会话里拿到不同原始编号, 重映射后必须落到同一个值."""
+
+    from .state_ids import build_vocabulary, remap_states, save_state_map, state_columns
+
+    # 会话 A 与 B 的"首次发现顺序"不同, 于是同一个状态在两边的原始编号不同.
+    session_a = {0: "Control=Idle", 1: "Control=Swoop Antic", 2: "Control=Idle|Death="}
+    session_b = {0: "Control=Swoop Antic", 1: "Control=Idle", 2: "Control=Swoop Recovery"}
+
+    vocabulary = build_vocabulary([session_a, session_b])
+    assert vocabulary["Control=Idle"] != vocabulary["Control=Swoop Antic"], vocabulary
+    assert "Control=Swoop Recovery" in vocabulary, vocabulary
+
+    field_names = ["player_health", "boss_state_id", "boss_fsm0_state_id"]
+    columns = state_columns(field_names)
+    assert columns == [1, 2], columns
+
+    # A 里编号 1 与 B 里编号 0 是同一个状态, 重映射后必须相等.
+    row_a = np.asarray([5.0, 1.0, 2.0], dtype=np.float32)
+    row_b = np.asarray([5.0, 0.0, 1.0], dtype=np.float32)
+    mapped_a = remap_states(row_a, columns, session_a, vocabulary)
+    mapped_b = remap_states(row_b, columns, session_b, vocabulary)
+    assert mapped_a[1] == mapped_b[1], (mapped_a, mapped_b)
+    # 两个不同的状态不能被压成同一个值.
+    assert mapped_a[1] != mapped_a[2], mapped_a
+    # 非状态列原样保留.
+    assert mapped_a[0] == 5.0, mapped_a
+
+    # -1 表示"没有 Boss", 必须落到 0, 不能当成一个合法编号去查表 (0 是合法编号).
+    missing = np.asarray([1.0, -1.0, -1.0], dtype=np.float32)
+    mapped_missing = remap_states(missing, columns, session_a, vocabulary)
+    assert mapped_missing[1] == 0.0 and mapped_missing[2] == 0.0, mapped_missing
+
+    # 二维样本表 (行为克隆的数据) 走同一条路径: 同一个会话的若干行可以一次重映射.
+    batch = np.stack([row_a, row_a])
+    mapped_batch = remap_states(batch, columns, session_a, vocabulary)
+    assert mapped_batch.shape == batch.shape
+    assert np.allclose(mapped_batch[0], mapped_a) and np.allclose(mapped_batch[1], mapped_a)
+
+    # 会话里没出现过的编号只能落到 0, 不能撞上别的状态.
+    unseen = np.asarray([1.0, 7.0, 0.0], dtype=np.float32)
+    mapped_unseen = remap_states(unseen, columns, session_a, vocabulary)
+    assert mapped_unseen[1] == 0.0, mapped_unseen
+
+    test_demonstration_state_maps()
+    LOGGER.info("Boss 状态跨会话对齐: 通过 (词表 %d 项)", len(vocabulary))
+
+
+def test_demonstration_state_maps() -> None:
+    """数据集层: 两个会话的示范各带一份映射, 载入后同一个状态必须落到同一个值."""
+
+    import shutil
+
+    from .dataset import load_demonstrations
+
+    field_names = ["boss_state_id", "physics_frame", "player_health"]
+    demo_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-demos"
+    if demo_dir.exists():
+        shutil.rmtree(demo_dir, ignore_errors=True)
+    demo_dir.mkdir(parents=True)
+
+    def write_episode(name: str, rows: list[list[float]], state_map: dict[int, str], map_file: str) -> None:
+        np.savez_compressed(
+            demo_dir / name,
+            obs=np.asarray(rows, dtype=np.float32),
+            action=np.zeros((len(rows), 5), dtype=np.int64),
+            fields=np.asarray(field_names),
+            state_map=np.asarray(map_file),
+        )
+        save_state_map(demo_dir / map_file, state_map)
+
+    # 两个会话对同一批状态给出了相反的编号.
+    write_episode("episode-001.npz", [[0.0, 7.0, 5.0], [1.0, 7.0, 5.0]], {0: "Control=Idle", 1: "Control=Swoop Antic"}, "state-map-a.json")
+    write_episode("episode-002.npz", [[0.0, 9.0, 5.0], [1.0, 9.0, 5.0]], {0: "Control=Swoop Antic", 1: "Control=Idle"}, "state-map-b.json")
+
+    observations, _, vocabulary = load_demonstrations(demo_dir)
+    assert len(vocabulary) == 2, vocabulary
+    # 第 1 局第 1 行与第 2 局第 2 行都是 Control=Idle, 必须相等; 同理另外两行.
+    assert observations[0, 0] == observations[3, 0], observations[:, 0]
+    assert observations[1, 0] == observations[2, 0], observations[:, 0]
+    assert observations[0, 0] != observations[1, 0], observations[:, 0]
+    # 编号本身不能再是原始值 (0/1 是会话内的编号, 重映射后应该落到词表编号上).
+    assert observations[1, 0] != 1.0, observations[:, 0]
+    # 与游戏进程时长有关的列无论如何都清零.
+    assert np.all(observations[:, 1] == 0.0), observations[:, 1]
+
+    LOGGER.info("示范状态映射载入: 通过")
+
+
+def test_bc_and_train_state_vocab() -> None:
+    """把"带状态映射的示范 -> 行为克隆 -> 微调"这条链路真跑一遍, 不需要游戏.
+
+    这一段的关键产物是放在模型旁边的 `state_vocab.json`: 训练侧找不到它就会退回清零状态列,
+    而这是下次录制示范后必然要走的路, 所以要在自检里盯住.
+    """
+
+    import shutil
+
+    from . import bc as bc_module
+    from . import train as train_module
+
+    field_names = load_csharp_schema()
+    demo_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-bc-demos"
+    run_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-bc-runs"
+    for directory in (demo_dir, run_dir):
+        if directory.exists():
+            shutil.rmtree(directory, ignore_errors=True)
+    demo_dir.mkdir(parents=True)
+
+    def row(state_id: float, attacking: float) -> list[float]:
+        values = {name: 0.0 for name in field_names}
+        values["player_health"] = 5.0
+        values["player_health_ratio"] = 1.0
+        values["boss_alive"] = 1.0
+        values["boss_health_ratio"] = 1.0
+        values["boss_distance_n"] = 0.2
+        values["player_attacking"] = attacking
+        values["boss_state_id"] = state_id
+        values["boss_fsm0_state_id"] = state_id
+        return [values[name] for name in field_names]
+
+    state_map = {0: "Control=Idle", 1: "Control=Swoop Antic"}
+    observations = [row(0.0, 1.0), row(1.0, 0.0)] * 24
+    np.savez_compressed(
+        demo_dir / "episode-001.npz",
+        obs=np.asarray(observations, dtype=np.float32),
+        action=np.tile(np.asarray([2, 0, 0, 1, 0], dtype=np.int64), (len(observations), 1)),
+        fields=np.asarray(field_names),
+        state_map=np.asarray("state-map-test.json"),
+    )
+    save_state_map(demo_dir / "state-map-test.json", state_map)
+
+    bc_args = bc_module.build_parser().parse_args(
+        [
+            "--data", str(demo_dir),
+            "--out", str(run_dir / "bc"),
+            "--epochs", "3",
+            "--batch-size", "16",
+            "--patience", "0",
+        ]
+    )
+    model_path = bc_module.run_bc(bc_args)
+    assert model_path.is_file(), model_path
+
+    vocab_path = model_path.parent / VOCAB_FILE
+    assert vocab_path.is_file(), f"行为克隆没有写出状态词表: {vocab_path}"
+    vocabulary = load_vocabulary(vocab_path)
+    assert vocabulary["Control=Idle"] != vocabulary["Control=Swoop Antic"], vocabulary
+
+    # 训练侧要从 --resume 旁边的词表自动找到它, 不需要额外参数.
+    train_args = train_module.build_parser().parse_args(["--resume", str(model_path)])
+    assert train_module.load_state_vocabulary(train_args) == vocabulary
+
+    LOGGER.info("示范 -> 克隆 -> 微调的状态词表链路: 通过 (%d 项)", len(vocabulary))
+
+
+def test_normalizer_wrapper_depth() -> None:
+    """续训时的观测归一化只能包一层.
+
+    套两层的话, 训练看到的观测是"外层统计(内层统计(原始观测))", 而评估与部署只有一层,
+    同一个权重拿到的输入不是一个东西: 训练日志里有伤害有击杀, 一评估就站着不动.
+    """
+
+    import shutil
+
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+    from .bc import SpecEnv
+    from .train import build_normalized_env
+
+    work_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-normalizer"
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    work_dir.mkdir(parents=True)
+
+    def raw_env():
+        return DummyVecEnv([lambda: SpecEnv(216, tuple(int(x) for x in protocol.ACTION_SHAPE))])
+
+    saved = work_dir / "vecnormalize.pkl"
+    VecNormalize(raw_env(), norm_obs=True, norm_reward=False, clip_obs=10.0).save(str(saved))
+
+    loaded = build_normalized_env(raw_env(), saved)
+    assert isinstance(loaded, VecNormalize)
+    assert not isinstance(loaded.venv, VecNormalize), "归一化被套了两层, 训练与评估看到的观测会不一致"
+
+    fresh = build_normalized_env(raw_env(), None)
+    assert isinstance(fresh, VecNormalize) and not isinstance(fresh.venv, VecNormalize)
+
+    missing = build_normalized_env(raw_env(), work_dir / "不存在.pkl")
+    assert isinstance(missing, VecNormalize) and not isinstance(missing.venv, VecNormalize)
+
+    LOGGER.info("观测归一化只包一层: 通过")
 
 
 def main() -> None:
@@ -344,6 +575,9 @@ def main() -> None:
 
     test_protocol_roundtrip()
     test_reward()
+    test_state_vocabulary()
+    test_bc_and_train_state_vocab()
+    test_normalizer_wrapper_depth()
     test_env_against_fake_server()
     test_training_dry_run()
     LOGGER.info("全部自检通过")

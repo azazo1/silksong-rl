@@ -73,7 +73,9 @@ uv run silksong-train --resume runs/bc/bc.zip --finetune --timesteps 200000 --sp
 是个能用的起点, 一上来用默认学习率容易把它冲掉, 变成"重新随机探索".
 
 训练产物里除了模型与归一化统计, 还有 `episodes.jsonl`: 每个回合一行, 记录步数, 回报, 长度,
-造成/受到伤害, 击杀与阵亡, 便于训练结束后离线分析.
+造成/受到伤害, 击杀与阵亡, 便于训练结束后离线分析. 里面还有几个诊断量, 用来区分"打不动"的
+两种原因: `attack_steps` (主角真的挥出刀的步数) 与 `damage_per_swing` (每挥一刀平均造成多少伤害).
+挥刀少说明根本不出手, 挥刀多而每刀伤害低说明一直在够不着的距离上空挥.
 
 `--resume` 时命令行给的超参必须走 `PPO.load(..., **kwargs)`: SB3 的 load 会先用存档里的值覆盖
 `model.__dict__`, 再用 kwargs 覆盖一次, 所以写成"load 完再赋值"或"干脆不传"都会被存档里的
@@ -100,6 +102,8 @@ uv run tensorboard --logdir runs
 
 产物都落在 `runs/<实验名>/`: `final.zip` (模型), `checkpoints/` (周期存档),
 `vecnormalize.pkl` (观测归一化统计), `tb/` (TensorBoard), `episodes.jsonl` (逐回合日志).
+周期存档旁边会同时落一份同一时刻的归一化统计, 因此 `--resume runs/<实验名>/checkpoints/ppo_20000_steps.zip`
+可以直接续训, 不会因为找不到统计而让网络看到不同的输入分布.
 
 随时看某个实验的分段趋势 (不连游戏, 训练进行中也能看):
 
@@ -152,10 +156,18 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 观测字段由插件在连接时通过 `Hello` 消息上报 (`mods/rl-env/src/Observation/ObservationSchema.cs`
 是唯一权威定义), 训练侧按名字取值, 不硬编码下标. 训练用 `VecNormalize` 做观测归一化.
 
-其中 `physics_frame` 与 `boss_state_id` / `boss_fsm0..3_state_id` 这几列在训练侧被固定清零
-(见 `fields.py`): 前者的取值取决于游戏进程开了多久, 后者的编号是插件按发现顺序自增分配的,
-每个会话重新编号, 示范与训练之间不可比. 清零意味着策略看不到 Boss 的动作状态, 只能靠位置,
-速度与危险框来判断, 用这些字段当特征需要额外的"按状态名重映射"步骤.
+其中 `physics_frame` 这一列在训练侧被固定清零 (见 `fields.py`): 它的取值取决于这局游戏从启动
+到现在跑了多久, 示范与训练的取值范围完全不同. `boss_state_id` / `boss_fsm0..3_state_id` 则是
+"每个会话重新编号"的, 直接当特征用会把同一个数字的不同含义喂给网络, 所以:
+
+- 录制时插件给出的 `编号 -> 状态名` 会随示范一起存成 `state-map-*.json`, 每局 `.npz` 里也记着
+  自己属于哪份映射;
+- 行为克隆按状态名建一份稳定词表 (`state_vocab.json`, 与 `bc.zip` 放在一起) 并把示范重映射过去;
+- 训练与评估时 `train.py` 自动找 `--resume` / `--model` 旁边的词表, 用当前会话的映射把同一批
+  状态映射到同一套编号上, 于是"Boss 处于哪个动作状态"就成了可用特征.
+
+拿不到映射的旧录像 (没有 `state-map-*.json`) 只能退回清零这几列. 没有映射时训练侧同样清零,
+两边行为一致.
 
 ## 目录
 
@@ -166,6 +178,7 @@ uv run silksong-train --eval --model runs/moss-mother-a/final.zip --episodes 5
 | `src/silksong_rl/env.py` | Gymnasium 环境 |
 | `src/silksong_rl/reward.py` | 奖励计算 |
 | `src/silksong_rl/fields.py` | 需要在训练侧屏蔽的会话相关观测列 |
+| `src/silksong_rl/state_ids.py` | Boss 状态编号的跨会话对齐 (词表与重映射) |
 | `src/silksong_rl/train.py` | 训练与评估入口 |
 | `src/silksong_rl/record.py` | 人类示范录制 |
 | `src/silksong_rl/dataset.py` | 示范数据的载入与归一化 |

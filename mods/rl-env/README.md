@@ -132,6 +132,10 @@ pwsh -File mods/rl-env/build.ps1 -Install -GameDir '/path/to/Hollow Knight Silks
 | mod -> Python | 105 `StateMap` | JSON: Boss 状态 id 到 `FSM名=状态名` 的映射 |
 | mod -> Python | 106 `Record` | 人类示范样本: `[int32 stepIndex][float32 x N][int32 x 5]` |
 
+`StateMap` 是增量发的: 每发现一个新的状态组合就补一条. id 按"发现顺序"自增, 所以每个会话
+都会重新编号, 跨会话直接用会串味; 训练侧靠这份映射按状态名重映射成稳定编号 (见
+`trainer/README.md` 的"观测"一节), 因此录制时它必须跟着示范一起存下来.
+
 观测字段的权威定义在 `src/Observation/ObservationSchema.cs`, 训练侧从 `Hello` 里读名字,
 不硬编码下标. 训练侧的对应实现在 `trainer/src/silksong_rl/protocol.py`.
 

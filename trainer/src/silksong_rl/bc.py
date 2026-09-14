@@ -26,6 +26,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from . import protocol
 from .dataset import load_demonstrations
+from .state_ids import VOCAB_FILE, save_vocabulary
 
 LOGGER = logging.getLogger("silksong_rl.bc")
 
@@ -86,7 +87,13 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    observations, actions = load_demonstrations(args.data)
+    run_bc(args)
+
+
+def run_bc(args) -> Path:
+    """跑一遍行为克隆, 返回模型路径 (自检要能直接调用, 所以和命令行解析分开)."""
+
+    observations, actions, state_vocabulary = load_demonstrations(args.data)
     LOGGER.info("载入示范 %d 条, 观测 %d 维, 动作 %d 维", len(observations), observations.shape[1], actions.shape[1])
 
     # 用示范数据本身的均值方差做观测归一化, 并把统计量随模型一起存下来,
@@ -219,10 +226,17 @@ def main() -> None:
     model.save(str(output_dir / "bc.zip"))
     save_normalizer(output_dir / "vecnormalize.pkl", observations.shape[1], obs_mean, obs_var, len(normalized))
 
+    if state_vocabulary:
+        # 训练侧必须用同一份词表把当前会话的状态编号映射过来, 否则那些列的含义又对不上了.
+        save_vocabulary(output_dir / VOCAB_FILE, state_vocabulary)
+        LOGGER.info("Boss 状态词表已保存: %s (%d 项)", (output_dir / VOCAB_FILE).resolve(), len(state_vocabulary))
+
     LOGGER.info("行为克隆完成, 用时 %.1f 分钟", (time.monotonic() - started) / 60.0)
     LOGGER.info("模型已保存: %s", (output_dir / "bc.zip").resolve())
     LOGGER.info("归一化统计已保存: %s", (output_dir / "vecnormalize.pkl").resolve())
-    LOGGER.info("下一步: uv run silksong-train --resume %s --timesteps 200000", output_dir / "bc.zip")
+    LOGGER.info("下一步: uv run silksong-train --resume %s --finetune --timesteps 200000", output_dir / "bc.zip")
+
+    return output_dir / "bc.zip"
 
 
 def build_class_weights(actions: np.ndarray, power: float):

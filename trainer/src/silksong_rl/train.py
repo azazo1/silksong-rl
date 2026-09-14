@@ -26,6 +26,7 @@ from . import __version__
 from .client import EnvClient
 from .env import SilksongBossEnv
 from .reward import RewardConfig
+from .state_ids import VOCAB_FILE, load_vocabulary
 
 LOGGER = logging.getLogger("silksong_rl.train")
 
@@ -40,8 +41,11 @@ EPISODE_INFO_KEYS = (
     "attack_steps",
     "attack_pressed_steps",
     "bind_pressed_steps",
+    "close_steps",
+    "close_attack_steps",
     "min_boss_distance",
     "damage_per_swing",
+    "damage_per_press",
 )
 
 
@@ -156,8 +160,11 @@ class ProgressCallback(BaseCallback):
             "attack_steps": float(episode.get("attack_steps", 0.0)),
             "attack_pressed_steps": float(episode.get("attack_pressed_steps", 0.0)),
             "bind_pressed_steps": float(episode.get("bind_pressed_steps", 0.0)),
+            "close_steps": float(episode.get("close_steps", 0.0)),
+            "close_attack_steps": float(episode.get("close_attack_steps", 0.0)),
             "min_boss_distance": float(episode.get("min_boss_distance", -1.0)),
             "damage_per_swing": float(episode.get("damage_per_swing", 0.0)),
+            "damage_per_press": float(episode.get("damage_per_press", 0.0)),
         }
 
         try:
@@ -165,6 +172,25 @@ class ProgressCallback(BaseCallback):
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError as exc:
             LOGGER.warning("写 episodes.jsonl 失败: %s", exc)
+
+
+class CheckpointWithNormalizerCallback(CheckpointCallback):
+    """周期存档时顺手把观测归一化统计存到同一个目录.
+
+    只存模型的话, 从 checkpoint 续训会因为旁边找不到 vecnormalize.pkl 而从头统计,
+    网络看到的输入分布就和训练时不一致 (BC 与微调都依赖固定的归一化统计), 而不是
+    "少一点信息"这么简单.
+    """
+
+    def __init__(self, save_freq: int, save_path: str, name_prefix: str, vec_normalize) -> None:
+        super().__init__(save_freq=save_freq, save_path=save_path, name_prefix=name_prefix)
+        self._vec_normalize = vec_normalize
+
+    def _on_step(self) -> bool:
+        if self._vec_normalize is not None and self.n_calls % self.save_freq == 0:
+            self._vec_normalize.save(str(Path(self.save_path) / "vecnormalize.pkl"))
+
+        return super()._on_step()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -176,6 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs-dir", default="runs", help="输出目录")
     parser.add_argument("--resume", default=None, help="从 checkpoint 继续训练 (.zip)")
     parser.add_argument("--vecnormalize", default=None, help="继续训练时载入的 VecNormalize 统计文件")
+    parser.add_argument(
+        "--state-vocab",
+        default=None,
+        help="Boss 状态词表 (行为克隆产物 state_vocab.json); 不给就按 --resume/--model 旁边的找",
+    )
     parser.add_argument(
         "--finetune",
         action="store_true",
@@ -197,6 +228,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--player-death", type=float, default=-25.0, help="阵亡的奖励")
     parser.add_argument("--step-penalty", type=float, default=-0.002, help="每步固定惩罚")
     parser.add_argument("--approach", type=float, default=0.0, help="靠近 Boss 的塑形系数")
+    parser.add_argument(
+        "--close-reward",
+        type=float,
+        default=0.0,
+        help="每步停在攻击距离内就给这么多奖励 (密集项, 用来治'一直够不着')",
+    )
+    parser.add_argument("--close-distance", type=float, default=0.3, help="--close-reward 判定的归一化距离阈值")
 
     parser.add_argument("--checkpoint-every", type=int, default=20_000, help="每多少步存一次 checkpoint")
     parser.add_argument("--log-interval", type=int, default=2_000, help="每多少步打印一次进度")
@@ -205,6 +243,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval", action="store_true", help="只评估, 需要 --model")
     parser.add_argument("--model", default=None, help="评估用的模型 (.zip)")
     parser.add_argument("--episodes", type=int, default=5, help="评估回合数")
+    parser.add_argument(
+        "--stochastic",
+        action="store_true",
+        help="评估时按策略分布采样而不是取 argmax; 多维离散动作空间下 argmax 得到的联合动作可能落在分布之外",
+    )
     parser.add_argument("--verbose", action="store_true", help="输出更详细的日志")
     return parser
 
@@ -232,7 +275,48 @@ def build_env(args: argparse.Namespace, reward_config: RewardConfig) -> Silksong
         client.set_speed(args.speed)
         LOGGER.info("已把游戏时间倍率设为 %s", args.speed)
 
-    return SilksongBossEnv(client, reward_config=reward_config)
+    return SilksongBossEnv(client, reward_config=reward_config, state_vocabulary=load_state_vocabulary(args))
+
+
+def load_state_vocabulary(args: argparse.Namespace) -> dict[str, int]:
+    """找行为克隆留下的 Boss 状态词表.
+
+    有词表才能把当前会话的 Boss 状态编号映射成示范里的同一套编号; 找不到就照旧清零那些列.
+    """
+
+    candidates: list[Path] = []
+    if args.state_vocab:
+        candidates.append(Path(args.state_vocab))
+    if args.resume:
+        candidates.append(Path(args.resume).parent / VOCAB_FILE)
+    if args.model:
+        candidates.append(Path(args.model).parent / VOCAB_FILE)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            vocabulary = load_vocabulary(candidate)
+            LOGGER.info("已载入 Boss 状态词表: %s (%d 项)", candidate, len(vocabulary))
+            return vocabulary
+
+    return {}
+
+
+def build_normalized_env(raw_env, normalizer_path: Path | None):
+    """给原始 vec env 包上观测归一化, 且**只包一层**.
+
+    续训时容易写成"先 VecNormalize(raw) 再 VecNormalize.load(saved, 那一层)", 于是两层叠在一起:
+    训练看到的观测是 外层统计(内层统计(原始观测)), 而评估与部署只有一层. 同一个权重拿到的输入
+    不是一个东西, 表现就是训练日志里能打出伤害与击杀, 一评估却站着不动.
+    """
+
+    if normalizer_path is not None and normalizer_path.exists():
+        LOGGER.info("已载入观测归一化统计: %s", normalizer_path)
+        return VecNormalize.load(str(normalizer_path), raw_env)
+
+    if normalizer_path is not None:
+        LOGGER.warning("没有找到归一化统计 (%s), 将从头统计", normalizer_path)
+
+    return VecNormalize(raw_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
 
 
 def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
@@ -245,8 +329,7 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
     env = build_env(args, reward_config)
     # Monitor 默认会用自己那份 episode 统计覆盖 info["episode"], 这里把自定义字段带上.
     monitored = Monitor(env, info_keywords=EPISODE_INFO_KEYS)
-    vec_env = DummyVecEnv([lambda: monitored])
-    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
+    raw_env = DummyVecEnv([lambda: monitored])
 
     net_arch = [int(width) for width in args.net_arch.split(",") if width.strip()]
 
@@ -260,6 +343,15 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
         ent_coef = 0.003 if args.ent_coef == 0.01 else args.ent_coef
         target_kl = 0.03 if args.target_kl is None else args.target_kl
         LOGGER.info("微调模式: 学习率 %s, 熵系数 %s, KL 上限 %s", learning_rate, ent_coef, target_kl)
+
+    # 观测归一化只包一层: 续训时把上一段留下的统计装进这一层, 而不是在已经包好的外面再套一层.
+    # 套两层的话训练看到的观测是"外层统计(内层统计(原始观测))", 评估与部署只有一层, 同一个权重
+    # 拿到的输入不是一个东西 —— 表现就是训练日志里能打出伤害, 一评估就站着不动.
+    normalizer_path = None
+    if args.resume:
+        normalizer_path = Path(args.vecnormalize) if args.vecnormalize else Path(args.resume).parent / "vecnormalize.pkl"
+
+    vec_env = build_normalized_env(raw_env, normalizer_path)
 
     if args.resume:
         LOGGER.info("从 %s 继续训练", args.resume)
@@ -289,14 +381,6 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             model.target_kl,
             model.policy_kwargs.get("net_arch") if isinstance(model.policy_kwargs, dict) else None,
         )
-        # 行为克隆产出的模型旁边会带一份归一化统计, 微调时必须沿用, 否则网络看到的输入分布不一致.
-        normalizer_path = Path(args.vecnormalize) if args.vecnormalize else Path(args.resume).parent / "vecnormalize.pkl"
-        if normalizer_path.exists():
-            vec_env = VecNormalize.load(str(normalizer_path), vec_env)
-            model.set_env(vec_env)
-            LOGGER.info("已载入观测归一化统计: %s", normalizer_path)
-        else:
-            LOGGER.warning("没有找到归一化统计 (%s), 将从头统计", normalizer_path)
     else:
         model = PPO(
             "MlpPolicy",
@@ -321,10 +405,11 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
     ]
     if args.checkpoint_every > 0:
         callbacks.append(
-            CheckpointCallback(
+            CheckpointWithNormalizerCallback(
                 save_freq=args.checkpoint_every,
                 save_path=str(run_dir / "checkpoints"),
                 name_prefix="ppo",
+                vec_normalize=vec_env,
             )
         )
 
@@ -363,13 +448,21 @@ def run_evaluation(args: argparse.Namespace, reward_config: RewardConfig) -> Non
 
     model = PPO.load(args.model, env=vec_env)
 
+    if args.seed is not None:
+        vec_env.seed(args.seed)
+    # 多维离散动作空间里, 各维取 argmax 拼出来的联合动作可能压根不是策略采样得到过的动作,
+    # 于是"确定性策略"经常是个退化行为 (例如一直往一个方向走而不出手), 而训练时按分布采样
+    # 才是它真正的水平. 想看真实水平就用 --stochastic.
+    deterministic = not args.stochastic
+    LOGGER.info("评估动作: %s", "确定性 argmax" if deterministic else "按策略分布采样")
+
     wins = 0
     for episode in range(1, args.episodes + 1):
         observation = vec_env.reset()
         total_reward = 0.0
         steps = 0
         while True:
-            action, _ = model.predict(observation, deterministic=True)
+            action, _ = model.predict(observation, deterministic=deterministic)
             observation, reward, done, infos = vec_env.step(action)
             total_reward += float(reward[0])
             steps += 1
@@ -405,6 +498,8 @@ def main() -> None:
         player_death=args.player_death,
         step_penalty=args.step_penalty,
         approach=args.approach,
+        close_reward=args.close_reward,
+        close_distance=args.close_distance,
     )
 
     if os.environ.get("SILKSONG_RL_DRY_RUN"):

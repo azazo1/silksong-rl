@@ -460,6 +460,11 @@ namespace RLEnv.Session
             _collector.Collect(_recordStepIndex);
             _server.SendRecord(_recordStepIndex, _collector.Buffer, indices);
 
+            // 一个记录步到此结束: 把"本步"的事件计数清零.
+            // 漏掉这一句的话, 示范里的 damage_dealt_step 会变成整局的累计值 (0 一路涨到 Boss 总血量),
+            // 而训练时同一列是每步增量, 行为克隆学到的输入分布与上场时看到的完全对不上.
+            _combat.BeginStep();
+
             if (_collector.States.Dirty)
             {
                 _server.SendStateMap(_collector.States.ToJson());

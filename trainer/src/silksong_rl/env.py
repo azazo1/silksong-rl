@@ -17,8 +17,13 @@ from gymnasium import spaces
 from .client import EnvClient, EnvProtocolError, Observation
 from .fields import build_mask
 from .reward import RewardConfig, compute_reward
+from .state_ids import remap_states, state_columns
 
 LOGGER = logging.getLogger(__name__)
+
+# 观测里的 boss_distance_n 是"按场地半宽/半高归一化后的距离", 0.3 大约对应人贴身挥刀的距离
+# (人在这段距离内的挥刀率最高), 用来统计"有多少步真的贴到了 Boss 身边".
+CLOSE_DISTANCE = 0.3
 
 
 class SilksongBossEnv(gym.Env):
@@ -32,12 +37,15 @@ class SilksongBossEnv(gym.Env):
         reward_config: RewardConfig | None = None,
         connect: bool = True,
         reconnect_attempts: int = 3,
+        state_vocabulary: dict[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.client = client
         self.reward_config = reward_config or RewardConfig()
         self.reconnect_attempts = reconnect_attempts
         self._mask = np.asarray([], dtype=np.int64)
+        self._state_columns: list[int] = []
+        self._state_vocabulary = state_vocabulary or {}
 
         if connect and not client.connected:
             client.connect()
@@ -67,19 +75,30 @@ class SilksongBossEnv(gym.Env):
         )
         self.action_space = spaces.MultiDiscrete(np.asarray(self.client.action_shape, dtype=np.int64))
 
-        # 会话相关字段 (例如 physics_frame) 在示范与训练之间取值范围不同, 清零让策略忽略它们.
-        mask = build_mask(self.client.field_names)
+        # 会话相关字段在示范与训练之间取值范围不同: 与游戏进程时长有关的那几列永远清零;
+        # Boss 状态编号如果有词表就按名字重映射 (两边对齐), 没有才清零.
+        using_states = bool(self._state_vocabulary)
+        self._state_columns = state_columns(self.client.field_names) if using_states else []
+        mask = build_mask(self.client.field_names, include_state_fields=not using_states)
         self._mask = np.asarray(mask, dtype=np.int64)
         if mask:
             LOGGER.info("已屏蔽观测字段: %s", ", ".join(self.client.field_names[i] for i in mask))
+        if using_states:
+            LOGGER.info(
+                "Boss 状态按词表重映射 (%d 项, %d 列), 不再清零",
+                len(self._state_vocabulary),
+                len(self._state_columns),
+            )
 
     def _postprocess(self, values: np.ndarray) -> np.ndarray:
-        """清零被屏蔽的列, 返回给策略看的观测."""
+        """清零被屏蔽的列 / 重映射状态编号, 返回给策略看的观测."""
 
         array = np.asarray(values, dtype=np.float32)
-        if self._mask.size:
+        if self._mask.size or self._state_columns:
             array = array.copy()
             array[self._mask] = 0.0
+            if self._state_columns:
+                array = remap_states(array, self._state_columns, self.client.state_map, self._state_vocabulary)
 
         return array
 
@@ -103,11 +122,13 @@ class SilksongBossEnv(gym.Env):
             "boss_kills": 0.0,
             "player_deaths": 0.0,
             "reset_seconds": self._last_reset_seconds,
-            # 诊断量: 只靠"造成伤害"看不出打不动的原因, 这两个数能区分
+            # 诊断量: 只靠"造成伤害"看不出打不动的原因, 这几个数能区分
             # "根本不出手" 与 "一直挥空": 前者 attack_steps 很小, 后者挥刀多但每刀伤害低.
             "attack_steps": 0.0,
             "attack_pressed_steps": 0.0,
             "bind_pressed_steps": 0.0,
+            "close_steps": 0.0,
+            "close_attack_steps": 0.0,
             "min_boss_distance": float("inf"),
         }
 
@@ -161,21 +182,29 @@ class SilksongBossEnv(gym.Env):
             stats["attack_steps"] += 1.0
 
         flat = np.asarray(action).reshape(-1)
-        if flat.size >= 4 and int(flat[3]) == 1:
+        pressed = flat.size >= 4 and int(flat[3]) == 1
+        if pressed:
             stats["attack_pressed_steps"] += 1.0
         if flat.size >= 5 and int(flat[4]) == 1:
             stats["bind_pressed_steps"] += 1.0
 
         distance = float(named.get("boss_distance_n", -1.0))
-        if distance >= 0.0 and distance < stats["min_boss_distance"]:
-            stats["min_boss_distance"] = distance
+        if distance >= 0.0:
+            if distance < stats["min_boss_distance"]:
+                stats["min_boss_distance"] = distance
+            if distance < CLOSE_DISTANCE:
+                stats["close_steps"] += 1.0
+                if pressed:
+                    stats["close_attack_steps"] += 1.0
 
     def _finalize_stats(self) -> None:
         """回合结束时把区间量换算成便于比较的派生量."""
 
         stats = self.episode_stats
         swings = stats["attack_steps"]
+        presses = stats["attack_pressed_steps"]
         stats["damage_per_swing"] = stats["damage_dealt"] / swings if swings > 0.0 else 0.0
+        stats["damage_per_press"] = stats["damage_dealt"] / presses if presses > 0.0 else 0.0
         if stats["min_boss_distance"] == float("inf"):
             stats["min_boss_distance"] = -1.0
 

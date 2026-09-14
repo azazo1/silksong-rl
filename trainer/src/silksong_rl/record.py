@@ -20,6 +20,8 @@ import numpy as np
 
 from .client import EnvClient
 from . import protocol
+from .fields import find_cumulative_event_columns
+from .state_ids import save_state_map
 
 LOGGER = logging.getLogger("silksong_rl.record")
 
@@ -45,6 +47,11 @@ def main() -> None:
 
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 状态机编号是每个会话重新分配的, 所以这份 "编号 -> 状态名" 必须跟示范一起落盘,
+    # 否则 boss_state_id 这类字段事后无法跨会话对齐, 只能整列丢掉.
+    session_id = time.strftime("%Y%m%d-%H%M%S")
+    state_map_name = f"state-map-{session_id}.json"
 
     client = EnvClient(host=args.host, port=args.port, connect_timeout=180.0, reset_timeout=180.0)
     client.connect()
@@ -98,12 +105,17 @@ def main() -> None:
 
         if observations:
             path = output_dir / f"episode-{episode:03d}.npz"
+            observations_array = np.stack(observations)
             np.savez_compressed(
                 path,
-                obs=np.stack(observations),
+                obs=observations_array,
                 action=np.asarray(actions, dtype=np.int64),
                 fields=np.asarray(client.field_names),
+                # 这一局属于哪份状态映射 (每一局都重写一次, 中途崩了也不至于全丢).
+                state_map=np.asarray(state_map_name),
             )
+            save_state_map(output_dir / state_map_name, client.state_map)
+            warn_if_cumulative_damage(observations_array, client.field_names)
             total_samples += len(observations)
             LOGGER.info("第 %d 回合已保存 %d 个样本: %s", episode, len(observations), path)
         else:
@@ -114,7 +126,23 @@ def main() -> None:
 
     client.close()
     LOGGER.info("录制结束, 共 %d 个样本, 输出目录 %s", total_samples, output_dir.resolve())
+    LOGGER.info("Boss 状态映射已存: %s (%d 项)", state_map_name, len(client.state_map))
     LOGGER.info("下一步: uv run silksong-bc --data %s", output_dir)
+
+
+def warn_if_cumulative_damage(observations: np.ndarray, field_names: list[str]) -> None:
+    """示范里的"本步造成伤害"必须是每步增量.
+
+    插件曾经在录制路径上漏了一次按步清零, 于是这一列变成整局的累计值, 而训练时它是增量,
+    行为克隆学到的输入分布就和上场时看到的对不上. 这里做个廉价的一致性检查.
+    """
+
+    for index in find_cumulative_event_columns(observations, field_names):
+        LOGGER.warning(
+            "%s 整局单调不减 (0 -> %.0f), 看起来是累计值而不是每步增量: 插件录制路径的按步清零可能没生效",
+            field_names[index],
+            observations[:, index].max(),
+        )
 
 
 def pick(values, field_names: list[str], name: str) -> float:

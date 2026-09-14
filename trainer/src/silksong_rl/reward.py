@@ -21,6 +21,8 @@ class RewardConfig:
     player_death: float = -25.0
     step_penalty: float = -0.002
     approach: float = 0.0
+    close_reward: float = 0.0
+    close_distance: float = 0.3
     boss_hp_ratio_bonus: float = 0.0
     clip: float = 0.0
 
@@ -29,6 +31,7 @@ class RewardConfig:
             f"伤害 {self.damage_dealt:+.2f}/点, 受伤 {self.damage_taken:+.2f}/次, "
             f"击杀 {self.boss_kill:+.1f}, 阵亡 {self.player_death:+.1f}, "
             f"每步 {self.step_penalty:+.4f}, 接近 {self.approach:+.3f}, "
+            f"贴身 {self.close_reward:+.3f}/步 (<{self.close_distance}), "
             f"血量奖励 {self.boss_hp_ratio_bonus:+.2f}"
         )
 
@@ -49,6 +52,7 @@ def compute_reward(previous: Observation | None, current: Observation, config: R
         "player_death": config.player_death * player_died,
         "step_penalty": config.step_penalty,
         "approach": 0.0,
+        "close": 0.0,
         "boss_hp_ratio": 0.0,
     }
 
@@ -56,6 +60,14 @@ def compute_reward(previous: Observation | None, current: Observation, config: R
         current_distance = float(named.get("boss_distance_n", 0.0))
         previous_distance = float(previous.named.get("boss_distance_n", current_distance))
         components["approach"] = config.approach * (previous_distance - current_distance)
+
+    # 接近项是望远镜式求和, 一回合的总收益被"初始距离"卡死, 只能提供"往哪边走"的方向;
+    # 想让策略真的停在攻击距离里, 得靠这个每步都给奖励的贴身项.
+    if config.close_reward != 0.0:
+        alive = float(named.get("boss_alive", 0.0))
+        distance = float(named.get("boss_distance_n", 1.0))
+        if alive > 0.5 and 0.0 <= distance < config.close_distance:
+            components["close"] = config.close_reward
 
     if config.boss_hp_ratio_bonus != 0.0:
         alive = float(named.get("boss_alive", 0.0))

@@ -19,14 +19,16 @@ from pathlib import Path
 LOGGER = logging.getLogger("silksong_rl.report")
 
 # 单元格里放的统计量: (标题, 字段名, 小数位, 是否带符号)
+# 列宽有限, 只放判断"打不动"最关键的几个: 按下刀 (出不出手), 贴近步 (有没有贴上去),
+# 每按伤害 (挥了到底打中没有). 更细的挥刀步 / 每刀伤害 / 最近距离在 episodes.jsonl 里.
 SUMMARY_FIELDS = (
     ("回报", "reward", 2, True),
     ("长度", "length", 1, False),
     ("造成伤害", "damage_dealt", 1, False),
     ("受到伤害", "damage_taken", 1, False),
-    ("挥刀步", "attack_steps", 1, False),
-    ("每刀伤害", "damage_per_swing", 2, False),
-    ("最近距离", "min_boss_distance", 2, False),
+    ("按下刀", "attack_pressed_steps", 1, False),
+    ("贴近步", "close_steps", 1, False),
+    ("每按伤害", "damage_per_press", 2, False),
     ("重置秒", "reset_seconds", 1, False),
 )
 
@@ -61,6 +63,12 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else float("nan")
 
 
+def field_mean(records: list[dict], key: str) -> float:
+    """只统计真的带这个字段的回合; 老日志里没有的字段返回 NaN, 显示成 '-'."""
+
+    return mean([float(record[key]) for record in records if key in record])
+
+
 def format_value(value: float, digits: int, signed: bool) -> str:
     if value != value:  # NaN
         return "-"
@@ -83,8 +91,7 @@ def describe(records: list[dict]) -> str:
         f"超时 {timeouts}",
     ]
     for title, key, digits, signed in SUMMARY_FIELDS:
-        values = [float(record.get(key, 0.0)) for record in records]
-        parts.append(f"{title} {format_value(mean(values), digits, signed)}")
+        parts.append(f"{title} {format_value(field_mean(records, key), digits, signed)}")
 
     return ", ".join(parts)
 
@@ -106,10 +113,9 @@ def describe_bins(bins: list[list[dict]]) -> str:
         step_range = f"{group[0].get('step', 0) // 1000}-{group[-1].get('step', 0) // 1000}k"
         row = f"{index:>3} {f'{first}-{last}':>11} {step_range:>11}"
         for _, key, digits, signed in SUMMARY_FIELDS:
-            values = [float(record.get(key, 0.0)) for record in group]
-            row += f" {format_value(mean(values), digits, signed):>{max(len(key) * 2, 8)}}"
+            row += f" {format_value(field_mean(group, key), digits, signed):>{max(len(key) * 2, 8)}}"
         lines.append(row)
-        damage_series.append(mean([float(record.get("damage_dealt", 0.0)) for record in group]))
+        damage_series.append(field_mean(group, "damage_dealt"))
         first = last + 1
 
     lines.append("")
@@ -133,6 +139,46 @@ def report_run(path: Path, bins: int) -> bool:
     return True
 
 
+def compare_runs(paths: list[Path]) -> None:
+    """把多个实验并排成一张窄表, 用来看"换了配置之后到底有没有变化".
+
+    趋势列取后两段的造成伤害之差: 还在涨 / 差不多 / 在掉.
+    """
+
+    header = (
+        f"{'实验':<16} {'回合':>5} {'胜':>3} {'回报':>8} {'长度':>7} {'伤害':>7} "
+        f"{'按下刀':>7} {'贴近步':>7} {'每按伤害':>8} {'后段趋势':>10}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for path in paths:
+        records = load_episodes(path)
+        if not records:
+            continue
+
+        wins = sum(1 for record in records if record.get("boss_kills", 0.0) > 0.0)
+        groups = split_bins(records, 3)
+        if len(groups) >= 2:
+            earlier = field_mean(groups[-2], "damage_dealt")
+            later = field_mean(groups[-1], "damage_dealt")
+            delta = later - earlier
+            trend = f"{delta:+.1f}"
+        else:
+            trend = "-"
+
+        print(
+            f"{path.parent.name:<16} {len(records):>5} {wins:>3} "
+            f"{format_value(field_mean(records, 'reward'), 2, True):>8} "
+            f"{format_value(field_mean(records, 'length'), 1, False):>7} "
+            f"{format_value(field_mean(records, 'damage_dealt'), 1, False):>7} "
+            f"{format_value(field_mean(records, 'attack_pressed_steps'), 0, False):>7} "
+            f"{format_value(field_mean(records, 'close_steps'), 0, False):>7} "
+            f"{format_value(field_mean(records, 'damage_per_press'), 2, False):>8} "
+            f"{trend:>10}"
+        )
+
+
 def find_runs(runs_dir: Path) -> list[Path]:
     return sorted(
         (child / "episodes.jsonl" for child in runs_dir.iterdir() if (child / "episodes.jsonl").is_file()),
@@ -149,6 +195,7 @@ def main() -> None:
     parser.add_argument("--run", default=None, help="实验目录, 或直接给 episodes.jsonl")
     parser.add_argument("--runs-dir", default="runs", help="--all 时扫描的目录")
     parser.add_argument("--all", action="store_true", help="汇总 runs 下所有有回合日志的实验")
+    parser.add_argument("--compare", action="store_true", help="把 runs 下的实验并排成一张窄表")
     parser.add_argument("--bins", type=int, default=6, help="趋势分段数")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -159,10 +206,13 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    if args.all:
+    if args.all or args.compare:
         paths = find_runs(Path(args.runs_dir))
         if not paths:
             raise SystemExit(f"{args.runs_dir} 下没有找到 episodes.jsonl")
+        if args.compare:
+            compare_runs(paths)
+            return
         for path in paths:
             report_run(path, args.bins)
             print()

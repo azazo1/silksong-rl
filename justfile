@@ -35,6 +35,10 @@ bc data *args:
 train *args:
     cd trainer && uv run silksong-train {{args}}
 
+# 分段接力训练, 夜里长时间跑用: just chain 5 100000
+chain segments timesteps:
+    pwsh -File tools/train-chain.ps1 -Segments {{segments}} -Timesteps {{timesteps}}
+
 # 评估已训练模型: just eval runs/moss-mother-a/final.zip
 eval model *args:
     cd trainer && uv run silksong-train --eval --model {{model}} {{args}}
@@ -51,6 +55,10 @@ report run *args:
 # 汇总 runs 下所有实验的逐回合日志
 report-all:
     cd trainer && uv run silksong-report --all
+
+# 把 runs 下的实验并排成一张窄表, 用来比较不同配置
+report-compare:
+    cd trainer && uv run silksong-report --compare
 
 # 查看训练曲线
 tensorboard:
