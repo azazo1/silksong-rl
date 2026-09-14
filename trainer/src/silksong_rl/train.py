@@ -27,6 +27,7 @@ from . import trace as trace_module
 from .client import EnvClient
 from .clips import build_clip
 from .env import DEFAULT_CLIP_FPS, SilksongBossEnv
+from .imitation import DemoAnchorCallback, load_demo_arrays
 from .reward import HORIZON_SECONDS, REFERENCE_STEP_FRAMES, RewardConfig
 from .state_ids import VOCAB_FILE, load_vocabulary, save_vocabulary
 
@@ -47,6 +48,10 @@ EPISODE_INFO_KEYS = (
     "close_attack_steps",
     "hit_steps",
     "whiff_steps",
+    "step_seconds",
+    "inactivity_penalties",
+    "healed_masks",
+    "bind_waste_steps",
     "steps_within_02",
     "steps_within_03",
     "steps_within_04",
@@ -282,6 +287,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="单回合步数上限 (默认沿用插件配置的 600); 改小决策步长时要相应放大",
     )
     parser.add_argument(
+        "--demo-anchor",
+        default=None,
+        help="人类示范目录: 每个 rollout 后用示范样本补一步模仿梯度, 当软先验用",
+    )
+    parser.add_argument("--demo-weight", type=float, default=0.1, help="模仿损失的权重")
+    parser.add_argument("--demo-batch", type=int, default=256, help="每步模仿用的示范批大小")
+    parser.add_argument(
         "--clip-fps",
         type=int,
         default=0,
@@ -320,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="够不着还挥刀时每步的奖励 (负数); 挥空占着出刀冷却, 等 Boss 进范围反而没刀可出",
     )
+    parser.add_argument("--inactivity-penalty", type=float, default=0.0, help="超过窗口时间没造成伤害的惩罚 (负数)")
+    parser.add_argument("--inactivity-window", type=float, default=5.0, help="上面那个窗口的秒数")
+    parser.add_argument("--heal-reward", type=float, default=0.0, help="每回一点血的奖励")
+    parser.add_argument("--bind-waste-penalty", type=float, default=0.0, help="丝量不够还按住缚丝的每步惩罚 (负数)")
+    parser.add_argument("--bind-silk-threshold", type=float, default=0.9, help="判定丝量够不够回血的比例阈值")
 
     parser.add_argument("--checkpoint-every", type=int, default=20_000, help="每多少步存一次 checkpoint")
     parser.add_argument("--log-interval", type=int, default=2_000, help="每多少步打印一次进度")
@@ -566,6 +583,18 @@ def run_training(args: argparse.Namespace, reward_config: RewardConfig) -> Path:
             )
         )
 
+    if args.demo_anchor:
+        demo_observations, demo_actions = load_demo_arrays(args.demo_anchor)
+        callbacks.append(
+            DemoAnchorCallback(
+                demo_observations,
+                demo_actions,
+                weight=args.demo_weight,
+                batch_size=args.demo_batch,
+            )
+        )
+        LOGGER.info("示范先验: 权重 %s, 每步批大小 %s", args.demo_weight, args.demo_batch)
+
     LOGGER.info("开始训练, 总步数 %d", args.timesteps)
     started = time.monotonic()
     model.learn(total_timesteps=args.timesteps, callback=callbacks, progress_bar=False)
@@ -661,6 +690,11 @@ def main() -> None:
         close_reward=args.close_reward,
         close_distance=args.close_distance,
         whiff_penalty=args.whiff_penalty,
+        inactivity_penalty=args.inactivity_penalty,
+        inactivity_window=args.inactivity_window,
+        heal_reward=args.heal_reward,
+        bind_waste_penalty=args.bind_waste_penalty,
+        bind_silk_threshold=args.bind_silk_threshold,
     )
 
     if os.environ.get("SILKSONG_RL_DRY_RUN"):

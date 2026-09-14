@@ -403,7 +403,8 @@ def test_training_dry_run() -> None:
     server.start()
     time.sleep(0.1)
 
-    run_dir = Path(__file__).resolve().parents[3] / ".tmp" / "selfcheck-training"
+    repo_root = Path(__file__).resolve().parents[3]
+    run_dir = repo_root / ".tmp" / "selfcheck-training"
     if run_dir.exists():
         shutil.rmtree(run_dir, ignore_errors=True)
 
@@ -420,6 +421,9 @@ def test_training_dry_run() -> None:
             # 顺手验证周期存档: 存档旁边必须同时落一份观测归一化统计, 否则从 checkpoint 续训
             # 会因为找不到统计而从零开始, 网络看到的输入分布与训练时不一致.
             "--checkpoint-every", "32",
+            # 顺便覆盖"示范先验"这条路径: 每个 rollout 后用示范样本补一步模仿梯度.
+            "--demo-anchor", str(repo_root / "trainer" / "records" / "moss-mother-v3"),
+            "--demo-weight", "0.05",
         ]
     )
 
@@ -710,6 +714,62 @@ def test_granularity_scaling() -> None:
     LOGGER.info("决策粒度的折扣因子折算: 通过")
 
 
+def test_extra_rewards() -> None:
+    """行为卫生奖励: 划水太久要罚, 回血要奖, 丝量不够还按住缚丝要罚."""
+
+    from .client import EnvClient, Observation
+    from .env import SilksongBossEnv
+
+    names = load_csharp_schema()
+
+    def observation(**overrides) -> Observation:
+        values = {name: 0.0 for name in names}
+        values["player_health"] = 5.0
+        values["player_silk_ratio"] = 1.0
+        values.update(overrides)
+        array = np.asarray([values[name] for name in names], dtype=np.float32)
+        return Observation(values=array, named=values, step_index=1, flags=0)
+
+    config = RewardConfig(
+        inactivity_penalty=-0.3,
+        inactivity_window=1.0,
+        heal_reward=1.0,
+        bind_waste_penalty=-0.05,
+    )
+    env = SilksongBossEnv(EnvClient(port=1), reward_config=config, connect=False)
+    env.step_frames = 6.0  # 0.1 秒/步, 1 秒窗口 = 10 步
+    env.episode_stats = {"inactivity_penalties": 0.0, "healed_masks": 0.0, "bind_waste_steps": 0.0}
+    env._steps_since_damage = 0
+    env._previous_health = 5.0
+
+    idle = observation()
+    for _ in range(9):
+        _, components = env._extra_rewards(idle, [2, 1, 0, 0, 0])
+        assert components["inactivity"] == 0.0, components
+    _, components = env._extra_rewards(idle, [2, 1, 0, 0, 0])
+    assert abs(components["inactivity"] + 0.3) < 1e-9, components
+    assert env.episode_stats["inactivity_penalties"] == 1.0
+
+    # 打中 Boss 会把计时清零.
+    _, components = env._extra_rewards(observation(damage_dealt_step=5.0), [2, 1, 0, 0, 0])
+    assert env._steps_since_damage == 0
+
+    # 面罩从 5 涨到 7 = 回了两点血.
+    _, components = env._extra_rewards(observation(player_health=7.0), [2, 1, 0, 0, 0])
+    assert abs(components["heal"] - 2.0) < 1e-9, components
+    assert env.episode_stats["healed_masks"] == 2.0
+
+    # 丝量不够还按住缚丝.
+    _, components = env._extra_rewards(observation(player_silk_ratio=0.2), [2, 1, 0, 0, 1])
+    assert abs(components["bind_waste"] + 0.05) < 1e-9, components
+    _, components = env._extra_rewards(observation(player_silk_ratio=1.0), [2, 1, 0, 0, 1])
+    assert components["bind_waste"] == 0.0, components
+    _, components = env._extra_rewards(observation(player_silk_ratio=0.2), [2, 1, 0, 0, 0])
+    assert components["bind_waste"] == 0.0, "没按缚丝不该罚"
+
+    LOGGER.info("行为卫生奖励 (划水/回血/空按): 通过")
+
+
 def main() -> None:
     # Windows 控制台默认不是 UTF-8, 中文日志会变乱码.
     for stream in (sys.stdout, sys.stderr):
@@ -729,6 +789,7 @@ def main() -> None:
     test_training_dry_run()
     test_evaluation_trace()
     test_granularity_scaling()
+    test_extra_rewards()
     LOGGER.info("全部自检通过")
 
 

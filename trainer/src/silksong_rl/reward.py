@@ -35,6 +35,16 @@ class RewardConfig:
     close_reward: float = 0.0
     close_distance: float = 0.3
     whiff_penalty: float = 0.0
+    # 一次挥刀打完却没造成任何伤害时的惩罚. 按"步"算的惩罚摊薄了责任, 而一次挥空真正
+    # 浪费的是整段出刀动画 (期间动不了也砍不出第二刀), 所以额外给一个按刀结算的项.
+    swing_whiff_penalty: float = 0.0
+    # 下面三项参考同类项目 (pixel DQN) 的奖励设计: 长时间不造成伤害要罚 (防止学会站着不动),
+    # 成功回血要奖 (回血直接换来更多输出机会), 按住当前根本执行不了的键也要罚一点.
+    inactivity_penalty: float = 0.0
+    inactivity_window: float = 5.0
+    heal_reward: float = 0.0
+    bind_waste_penalty: float = 0.0
+    bind_silk_threshold: float = 0.9
     boss_hp_ratio_bonus: float = 0.0
     clip: float = 0.0
     # 密集奖励按 "每 0.1 秒游戏时间" 折算: 换了决策粒度 (--step-frames) 之后,
@@ -48,6 +58,8 @@ class RewardConfig:
             f"每步 {self.step_penalty:+.4f}, 接近 {self.approach:+.3f}, "
             f"贴身 {self.close_reward:+.3f}/步 (<{self.close_distance}), "
             f"挥空 {self.whiff_penalty:+.3f}/步, "
+            f"划水 {self.inactivity_penalty:+.2f}/{self.inactivity_window:g}秒, "
+            f"回血 {self.heal_reward:+.2f}/点, 空按缚丝 {self.bind_waste_penalty:+.3f}/步, "
             f"血量奖励 {self.boss_hp_ratio_bonus:+.2f}"
         )
 

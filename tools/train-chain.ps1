@@ -28,6 +28,7 @@ param(
     [int]$GameBootSeconds = 45,
     [string]$CloseReward = '0',
     [string]$CloseDistance = '0.3',
+    [string]$Approach = '1.0',
     [string]$WhiffPenalty = '0',
     [int]$StepFrames = 0,
     [int]$MaxEpisodeSteps = 0,
@@ -36,7 +37,13 @@ param(
     [int]$ClipFps = 0,
     [int]$ClipSeconds = 0,
     [string]$LearningRate = '0',
-    [string]$TargetKl = '0'
+    [string]$TargetKl = '0',
+    [string]$InactivityPenalty = '0',
+    [string]$HealReward = '0',
+    [string]$BindWastePenalty = '0',
+    [string]$DemoAnchor = '',
+    [string]$DemoWeight = '0.1',
+    [string]$NStepsOverride = '0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -134,12 +141,28 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
         $extraArgs += @('--target-kl', $TargetKl)
         Write-ChainLog "KL 上限: $TargetKl"
     }
+    if ($InactivityPenalty -ne '0') {
+        $extraArgs += @('--inactivity-penalty', $InactivityPenalty)
+        Write-ChainLog "划水惩罚: $InactivityPenalty"
+    }
+    if ($HealReward -ne '0') {
+        $extraArgs += @('--heal-reward', $HealReward)
+        Write-ChainLog "回血奖励: $HealReward"
+    }
+    if ($BindWastePenalty -ne '0') {
+        $extraArgs += @('--bind-waste-penalty', $BindWastePenalty)
+        Write-ChainLog "空按缚丝惩罚: $BindWastePenalty"
+    }
+    if ($DemoAnchor -ne '') {
+        $extraArgs += @('--demo-anchor', $DemoAnchor, '--demo-weight', $DemoWeight)
+        Write-ChainLog "示范先验: $DemoAnchor (权重 $DemoWeight)"
+    }
     Push-Location $trainerDir
     try {
         & uv run silksong-train `
             --resume $resume `
             --finetune `
-            --approach 1.0 `
+            --approach $Approach `
             --timesteps $Timesteps `
             --run-name $runName `
             --speed $Speed `

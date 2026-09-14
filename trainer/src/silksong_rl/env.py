@@ -86,6 +86,10 @@ class SilksongBossEnv(gym.Env):
 
         self._last_reset_seconds = 0.0
 
+        # 划水计时与上一次的面罩数 (见 _extra_rewards).
+        self._steps_since_damage = 0
+        self._previous_health: float | None = None
+
         # 一个决策步对应多少物理帧 (build_env 会按 --step-frames 覆盖), 用来按粒度折算超参.
         self.step_frames = REFERENCE_STEP_FRAMES
 
@@ -157,6 +161,8 @@ class SilksongBossEnv(gym.Env):
         self._previous = observation
         self._episode_steps = 0
         self._episode_reward = 0.0
+        self._steps_since_damage = 0
+        self._previous_health = float(observation.named.get("player_health", 0.0))
         self.episode_stats = {
             "damage_dealt": 0.0,
             "damage_taken": 0.0,
@@ -172,6 +178,12 @@ class SilksongBossEnv(gym.Env):
             "close_attack_steps": 0.0,
             "hit_steps": 0.0,
             "whiff_steps": 0.0,
+            # 每个决策步对应多少游戏时间: 换过决策粒度之后, "挥刀步/命中步" 这类按步计的
+            # 数字只有除以它才能跟人类示范比.
+            "step_seconds": self.step_frames / 60.0,
+            "inactivity_penalties": 0.0,
+            "healed_masks": 0.0,
+            "bind_waste_steps": 0.0,
             "min_boss_distance": float("inf"),
             "clip_dir": "",
         }
@@ -185,6 +197,9 @@ class SilksongBossEnv(gym.Env):
     def step(self, action) -> tuple[np.ndarray, float, bool, bool, dict]:
         observation = self._with_reconnect(lambda: self.client.step(action), "step")
         reward, components = compute_reward(self._previous, observation, self.reward_config)
+        extra_reward, extra_components = self._extra_rewards(observation, action)
+        reward += extra_reward
+        components.update(extra_components)
 
         self._episode_steps += 1
         self._episode_reward += reward
@@ -269,6 +284,49 @@ class SilksongBossEnv(gym.Env):
                 stats["act_attack"] += 1.0
             if int(flat[4]) != 0:
                 stats["act_bind"] += 1.0
+
+    def _extra_rewards(self, observation: Observation, action) -> tuple[float, dict[str, float]]:
+        """三项"行为卫生"奖励: 划水太久, 回血成功, 以及按住当前根本用不出来的缚丝.
+
+        参考同类项目 (alvin/environment.py) 的做法: 5 秒没造成伤害罚 0.3 防止策略学会躲着不出手,
+        成功回血给 0.7 (回血换来更多输出机会), 按住执行不了的动作给一点负值.
+        """
+
+        named = observation.named
+        stats = self.episode_stats
+        config = self.reward_config
+        components = {"inactivity": 0.0, "heal": 0.0, "bind_waste": 0.0}
+
+        # 1. 长时间没造成伤害.
+        if config.inactivity_penalty != 0.0:
+            if float(named.get("damage_dealt_step", 0.0)) > 0.0:
+                self._steps_since_damage = 0
+            else:
+                self._steps_since_damage += 1
+                window = max(int(round(config.inactivity_window / max(self.step_frames / 60.0, 1e-6))), 1)
+                if self._steps_since_damage >= window:
+                    self._steps_since_damage = 0
+                    stats["inactivity_penalties"] += 1.0
+                    components["inactivity"] = config.inactivity_penalty
+
+        # 2. 面罩增加 = 回血成功.
+        if config.heal_reward != 0.0:
+            health = float(named.get("player_health", 0.0))
+            if self._previous_health is not None and health > self._previous_health:
+                gained = health - self._previous_health
+                stats["healed_masks"] += gained
+                components["heal"] = config.heal_reward * gained
+            self._previous_health = health
+
+        # 3. 按住缚丝但丝量不够: 人类示范里从不这样按 (策略有近四成步数在空按).
+        if config.bind_waste_penalty != 0.0:
+            flat = np.asarray(action).reshape(-1)
+            if flat.size >= 5 and int(flat[4]) != 0:
+                if float(named.get("player_silk_ratio", 1.0)) < config.bind_silk_threshold:
+                    stats["bind_waste_steps"] += 1.0
+                    components["bind_waste"] = config.bind_waste_penalty * config.dense_scale
+
+        return float(sum(components.values())), components
 
     def _finalize_stats(self) -> None:
         """回合结束时把区间量换算成便于比较的派生量."""
