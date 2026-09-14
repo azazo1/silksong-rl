@@ -16,6 +16,8 @@ import logging
 import sys
 from pathlib import Path
 
+from .env import DISTANCE_BUCKETS, bucket_key
+
 LOGGER = logging.getLogger("silksong_rl.report")
 
 # 单元格里放的统计量: (标题, 字段名, 小数位, 是否带符号)
@@ -128,6 +130,33 @@ def describe_bins(bins: list[list[dict]]) -> str:
     return "\n".join(lines)
 
 
+def describe_placement(records: list[dict]) -> str:
+    """站位诊断行: 各距离档位占了多少步, 以及真正打中的步占多少.
+
+    人类示范的参照值 (12 局全击杀): 距离 <0.3 占 18.6%, <0.5 占 40.1%, 命中步占 8.6%,
+    而"造成伤害"上不去基本都卡在站位, 所以这行比回报更能说明问题.
+    """
+
+    steps = field_mean(records, "length")
+    if steps != steps or steps <= 0:
+        return "站位: 回合日志里没有步数, 跳过"
+
+    parts = []
+    for threshold in DISTANCE_BUCKETS:
+        key = bucket_key(threshold)
+        if not any(key in record for record in records):
+            continue
+        parts.append(f"<{threshold:g} {field_mean(records, key) / steps * 100:.1f}%")
+    if not parts:
+        return "站位: 这份日志没有距离分档 (旧版本写的), 重新跑一轮才有"
+
+    if any("hit_steps" in record for record in records):
+        hits = field_mean(records, "hit_steps")
+        parts.append(f"命中步 {hits / steps * 100:.1f}% (每局 {hits:.1f} 步)")
+
+    return "站位: " + " ".join(parts)
+
+
 def report_run(path: Path, bins: int) -> bool:
     records = load_episodes(path)
     if not records:
@@ -135,6 +164,7 @@ def report_run(path: Path, bins: int) -> bool:
         return False
 
     LOGGER.info("%s: %s", path.parent.name, describe(records))
+    print(describe_placement(records))
     print(describe_bins(split_bins(records, bins)))
     return True
 

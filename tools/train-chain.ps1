@@ -11,6 +11,7 @@
 用法:
 
     pwsh -File tools/train-chain.ps1 -Segments 5 -Timesteps 100000
+    pwsh -File tools/train-chain.ps1 -Segments 5 -CloseReward 0.3
 
 日志: .tmp/train-chain.log (每段的起止), .tmp/train-<实验名>.log (每段的训练输出).
 #>
@@ -23,7 +24,9 @@ param(
     [double]$Speed = 6,
     [int]$LogInterval = 2000,
     [int]$CheckpointEvery = 10000,
-    [int]$GameBootSeconds = 45
+    [int]$GameBootSeconds = 45,
+    [string]$CloseReward = '0',
+    [string]$CloseDistance = '0.3'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -83,6 +86,12 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
     Write-ChainLog "第 $segment/$Segments 段开始: run=$runName resume=$resume"
 
     $started = Get-Date
+    # 贴身奖励是可选塑形项, 只在显式给出时才透传给训练脚本.
+    $rewardArgs = @()
+    if ($CloseReward -ne '0') {
+        $rewardArgs = @('--close-reward', $CloseReward, '--close-distance', $CloseDistance)
+        Write-ChainLog "贴身奖励: $CloseReward / 步 (距离阈值 $CloseDistance)"
+    }
     Push-Location $trainerDir
     try {
         & uv run silksong-train `
@@ -95,7 +104,8 @@ for ($segment = 1; $segment -le $Segments; $segment++) {
             --n-steps 1024 `
             --batch-size 256 `
             --log-interval $LogInterval `
-            --checkpoint-every $CheckpointEvery *>&1 |
+            --checkpoint-every $CheckpointEvery `
+            @rewardArgs *>&1 |
             Out-File -LiteralPath $segmentLog -Encoding utf8
     }
     finally {

@@ -25,6 +25,15 @@ LOGGER = logging.getLogger(__name__)
 # (人在这段距离内的挥刀率最高), 用来统计"有多少步真的贴到了 Boss 身边".
 CLOSE_DISTANCE = 0.3
 
+# 站位诊断用的距离分档: 人类示范里 90% 的命中都发生在 0.5 以内, 只看 0.3 以内会漏掉大半.
+DISTANCE_BUCKETS = (0.2, 0.3, 0.4, 0.5)
+
+
+def bucket_key(threshold: float) -> str:
+    """距离分档在回合日志里的字段名, 例如 0.5 -> steps_within_05."""
+
+    return "steps_within_{0:02d}".format(int(round(threshold * 10)))
+
 
 class SilksongBossEnv(gym.Env):
     """把游戏里的 Boss 战包装成 Gymnasium 环境."""
@@ -129,9 +138,12 @@ class SilksongBossEnv(gym.Env):
             "bind_pressed_steps": 0.0,
             "close_steps": 0.0,
             "close_attack_steps": 0.0,
+            "hit_steps": 0.0,
             "min_boss_distance": float("inf"),
             "clip_dir": "",
         }
+        for threshold in DISTANCE_BUCKETS:
+            self.episode_stats[bucket_key(threshold)] = 0.0
 
         return self._postprocess(observation.values), self._build_info(observation)
 
@@ -196,10 +208,16 @@ class SilksongBossEnv(gym.Env):
         if distance >= 0.0:
             if distance < stats["min_boss_distance"]:
                 stats["min_boss_distance"] = distance
+            for threshold in DISTANCE_BUCKETS:
+                if distance < threshold:
+                    stats[bucket_key(threshold)] += 1.0
             if distance < CLOSE_DISTANCE:
                 stats["close_steps"] += 1.0
                 if pressed:
                     stats["close_attack_steps"] += 1.0
+
+        if float(named.get("damage_dealt_step", 0.0)) > 0.0:
+            stats["hit_steps"] += 1.0
 
     def _finalize_stats(self) -> None:
         """回合结束时把区间量换算成便于比较的派生量."""
